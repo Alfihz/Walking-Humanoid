@@ -109,7 +109,6 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.last_left_contact = False
         self.last_right_contact = False
         self.last_hip_x = self.data.qpos[0]  # Initialize hip X position
-        self.steps_taken = 0
         self.last_swing_foot = None
         self.steps_taken = 0
         self.velocity_history = []
@@ -207,6 +206,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.velocity_history = []
 
         self.episode_start_y = self.data.qpos[1]
+        self.episode_start_x = self.data.qpos[0]
         
         return self._get_obs()
 
@@ -359,18 +359,28 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         right_foot_z = self.data.site_xpos[self.right_foot_site_id][2]
         info['env_metrics/left_foot_height'] = left_foot_z
         info['env_metrics/right_foot_height'] = right_foot_z
+
+        optimal_clearance = 0.10
         
         if left_contact and not right_contact:  # Right foot swinging
-            achieved_clearance = max(0, right_foot_z - min_clearance_height)
-            # Higher reward for proper clearance, penalty for insufficient lift
             if right_foot_z >= min_clearance_height:
-                clearance_reward = np.clip(achieved_clearance * 15, 0, 3.0)  # Increased multiplier
+                clearance_deviation = abs(right_foot_z - optimal_clearance)
+                
+                if clearance_deviation < 0.04:
+                    clearance_reward = 2.0 - (clearance_deviation * 10)
+                else:
+                    clearance_reward = 0.5
             else:
                 clearance_reward = -1.0  # Penalty for dragging foot
+
         elif right_contact and not left_contact:  # Left foot swinging
-            achieved_clearance = max(0, left_foot_z - min_clearance_height)
             if left_foot_z >= min_clearance_height:
-                clearance_reward = np.clip(achieved_clearance * 15, 0, 3.0)
+                clearance_deviation = abs(left_foot_z - optimal_clearance)
+
+                if clearance_deviation < 0.04:
+                    clearance_reward = 2.0 - (clearance_deviation * 10)
+                else:
+                    clearance_reward = 0.5
             else:
                 clearance_reward = -1.0  # Penalty for dragging foot
         
@@ -504,6 +514,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Convert to euler angles (approximate)
         torso_roll = 2.0 * np.arcsin(torso_quat[1])  # Roll (side tilt)
         lateral_tilt_penalty = -3.0 * np.square(torso_roll)
+        torso_pitch = 2.0 * np.arcsin(np.clip(torso_quat[2], -1.0, 1.0))
+        pitch_penalty = -5.0 * np.square(torso_pitch)
 
         # Get arm joint velocities (adjust indices based on your model)
         # Typically arms are joints 15-22 in humanoid models
@@ -519,30 +531,26 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Torso upright bonus (you have this but can enhance it)
         torso_quat = self.data.xquat[self.torso_id]
         # w component close to 1 means upright
-        upright_bonus = 3.0 * torso_quat[0]  # w component
+        upright_bonus = 8.0 * torso_quat[0]  # w component
+
+        # ADD: Extra penalty for significant deviation
+        if torso_quat[0] < 0.95:  # Not vertical enough (w < 0.95 means >18° tilt)
+            upright_penalty = -5.0 * (0.95 - torso_quat[0]) ** 2
+        else:
+            upright_penalty = 0.0
 
         # Penalize torso angular velocity (reduce wobbling)
         torso_angular_vel = self.data.cvel[self.torso_id, 3:]  # Angular velocities
-        torso_stability_penalty = -0.5 * np.sum(np.square(torso_angular_vel))
+        torso_stability_penalty = -self.torso_stability_weight * np.sum(np.square(torso_angular_vel))
 
         # Head stability (if you have a head body)
         try:
             head_id = self.model.body('head').id
             head_angular_vel = self.data.cvel[head_id, 3:]
-            head_stability_penalty = -0.3 * np.sum(np.square(head_angular_vel))
+            head_stability_penalty = -self.head_stability_weight * np.sum(np.square(head_angular_vel))
         except:
             head_stability_penalty = 0.0
         
-        # ENHANCED: Forward reward only given for proper walking, not skating
-        # Check if robot is achieving minimum clearance (indicating real steps, not skating)
-        left_foot_z = self.data.site_xpos[self.left_foot_site_id][2]
-        right_foot_z = self.data.site_xpos[self.right_foot_site_id][2]
-        
-        # At least one foot should periodically achieve clearance for proper walking
-        recent_clearance = max(left_foot_z, right_foot_z)
-        clearance_multiplier = 1.0 if recent_clearance > 0.05 else 0.3  # Reduce reward if skating
-        
-        forward_reward = self.forward_reward_weight * forward_velocity * clearance_multiplier
         ctrl_cost = self.ctrl_cost_weight * np.sum(np.square(action))
         contact_cost = self.contact_cost_weight * np.sum(np.square(self.contact_forces))
 
@@ -573,7 +581,6 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Initialize ALL metrics with default values first
         all_metrics = {
             # Base rewards - ALWAYS present
-            'base_reward/forward': forward_reward,
             'base_reward/healthy': healthy_reward,
             'base_reward/ctrl_cost': -ctrl_cost,
             'base_reward/contact_cost': -contact_cost,
@@ -651,7 +658,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             standing_reward = balance_reward + height_reward + velocity_penalty + smooth_upright_reward - ctrl_cost
             
             # Progressive forward reward
-            progressive_forward_weight = self.walking_progress * 2.5
+            progressive_forward_weight = self.walking_progress * self.forward_reward_weight
             enhanced_forward_reward = progressive_forward_weight * forward_velocity
             
             # ENHANCED: Velocity tracking reward with better scaling
@@ -676,10 +683,6 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             else:
                 sustained_bonus = 0.0
             
-            distance_covered = self.data.qpos[0] - self.episode_start_x
-            if len(self.step_time_history) > 20 and distance_covered < 0.1:
-                total_reward = -20.0  # Penalty for not moving sufficiently
-            
             # Scale gait penalties during curriculum
             gait_penalty_scale = max(0.3, self.walking_progress)
             scaled_gait_reward = gait_reward * gait_penalty_scale
@@ -692,9 +695,13 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 + self.gait_reward_weight * scaled_gait_reward
                 + velocity_reward
                 + sustained_bonus
+                + straight_path_bonus
+                + upright_penalty
+                + head_stability_penalty
                 + lateral_penalty
                 + hip_stability_penalty
                 + lateral_tilt_penalty
+                + pitch_penalty
                 + arm_flailing_penalty
                 + arm_position_penalty
                 + upright_bonus
@@ -711,6 +718,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             alpha_standing = 1.0 - self.walking_progress
             alpha_walking = self.walking_progress
             total_reward = alpha_standing * standing_reward + alpha_walking * walking_reward
+
+            distance_covered = self.data.qpos[0] - self.episode_start_x
+            if len(self.step_time_history) > 20 and distance_covered < 0.1:
+                total_reward = -20.0  # Penalty for not moving sufficiently
             
             # Update all phase-specific metrics
             all_metrics.update({

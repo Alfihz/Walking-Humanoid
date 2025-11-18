@@ -38,7 +38,7 @@ NUM_ENVS = 24  # Increased from 8 to 24 for better sample efficiency
 
 # Metrics to log
 INFO_KEYWORDS = (
-    'base_reward/forward', 'base_reward/healthy', 'base_reward/ctrl_cost', 'base_reward/contact_cost',
+    'base_reward/healthy', 'base_reward/ctrl_cost', 'base_reward/contact_cost',
     'base_reward/gait_total', 'base_reward/total_reward',
     'gait_reward/contact_pattern_rew', 'gait_reward/clearance_rew', 'gait_reward/com_smoothness_pen', 
     'gait_reward/orientation_pen', 'gait_reward/clearance_achieved', 'gait_reward/alternation_reward', 'gait_reward/step_frequency_reward',
