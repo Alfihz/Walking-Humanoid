@@ -127,6 +127,35 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.torso_stability_weight = 0.5
         self.head_stability_weight = 0.3
 
+        # ============================================================
+        # NEW: NATURAL JOINT CONSTRAINT WEIGHTS
+        # ============================================================
+        # These enforce human-like arm and ankle positions
+        self.joint_constraint_weight = 2.0  # Master weight for all constraints
+
+        # Individual constraint weights (multiplied by master weight)
+        self.shoulder1_constraint_weight = 1.0   # Arm swing limits
+        self.shoulder2_constraint_weight = 1.5   # Arm position (keep arms down)
+        self.elbow_constraint_weight = 0.8       # Keep elbows straight
+        self.ankle_y_constraint_weight = 1.2     # Forward ankle flexion
+        self.ankle_x_constraint_weight = 1.0     # Lateral ankle stability
+
+        # ============================================================
+        # JOINT INDICES (based on XML structure)
+        # ============================================================
+        # qpos indices (first 7 are free joint: x, y, z, qw, qx, qy, qz)
+        # Then body joints in order they appear in XML:
+        self.shoulder1_right_idx = 24  # shoulder1_right joint
+        self.shoulder2_right_idx = 25  # shoulder2_right joint
+        self.elbow_right_idx = 26      # elbow_right joint
+        self.shoulder1_left_idx = 27   # shoulder1_left joint
+        self.shoulder2_left_idx = 28   # shoulder2_left joint
+        self.elbow_left_idx = 29       # elbow_left joint
+        self.ankle_y_right_idx = 14    # ankle_y_right joint
+        self.ankle_x_right_idx = 15    # ankle_x_right joint
+        self.ankle_y_left_idx = 20     # ankle_y_left joint
+        self.ankle_x_left_idx = 21     # ankle_x_left joint
+
     def set_training_phase(self, phase: str, progress: float = 0.0):
         """
         Dynamically change training phase during training.
@@ -222,6 +251,150 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                     if foot_geom in [geom1_name, geom2_name]:
                         return True
         return False
+    
+    def _calculate_joint_constraint_penalties(self):
+        """
+        NEW: Calculate penalties for joint positions outside natural human ranges.
+        
+        Enforces natural arm and ankle positions:
+        - Arms should swing naturally between 0 and 1 (not backward)
+        - Arms should stay at sides: -1.50 to -1.25 (not spread wide)
+        - Elbows should stay straight at 0 (relaxed position)
+        - Ankles Y should be between -0.1 and 0 (limited flexion)
+        - Ankles X should be at 0 (no twisting)
+        
+        Returns:
+            total_penalty: Combined penalty for all constraint violations
+            info: Dictionary with detailed metrics for each constraint
+        """
+        info = {}
+        total_penalty = 0.0
+        
+        # Get current joint positions
+        qpos = self.data.qpos
+        
+        # ============================================================
+        # SHOULDER1 CONSTRAINTS (Arm Swing: 0 to 1)
+        # ============================================================
+        shoulder1_right = qpos[self.shoulder1_right_idx]
+        shoulder1_left = qpos[self.shoulder1_left_idx]
+        
+        shoulder1_right_penalty = 0.0
+        if shoulder1_right < 0.0:
+            # Penalize backward swing beyond 0
+            shoulder1_right_penalty = -self.shoulder1_constraint_weight * (shoulder1_right ** 2)
+        elif shoulder1_right > 1.0:
+            # Penalize forward swing beyond 1
+            shoulder1_right_penalty = -self.shoulder1_constraint_weight * ((shoulder1_right - 1.0) ** 2)
+        
+        shoulder1_left_penalty = 0.0
+        if shoulder1_left < 0.0:
+            shoulder1_left_penalty = -self.shoulder1_constraint_weight * (shoulder1_left ** 2)
+        elif shoulder1_left > 1.0:
+            shoulder1_left_penalty = -self.shoulder1_constraint_weight * ((shoulder1_left - 1.0) ** 2)
+        
+        shoulder1_penalty = shoulder1_right_penalty + shoulder1_left_penalty
+        total_penalty += shoulder1_penalty
+        
+        info['joint_constraints/shoulder1_right'] = shoulder1_right
+        info['joint_constraints/shoulder1_left'] = shoulder1_left
+        info['joint_constraints/shoulder1_penalty'] = shoulder1_penalty
+        
+        # ============================================================
+        # SHOULDER2 CONSTRAINTS (Keep arms at sides: -1.34 to -1.25)
+        # ============================================================
+        shoulder2_right = qpos[self.shoulder2_right_idx]
+        shoulder2_left = qpos[self.shoulder2_left_idx]
+        
+        shoulder2_right_penalty = 0.0
+        if shoulder2_right < -1.34:
+            # Too far down/back
+            shoulder2_right_penalty = -self.shoulder2_constraint_weight * ((shoulder2_right + 1.50) ** 2)
+        elif shoulder2_right > -1.25:
+            # Arms spreading out
+            shoulder2_right_penalty = -self.shoulder2_constraint_weight * ((shoulder2_right + 1.25) ** 2)
+        
+        shoulder2_left_penalty = 0.0
+        if shoulder2_left < -1.34:
+            shoulder2_left_penalty = -self.shoulder2_constraint_weight * ((shoulder2_left + 1.50) ** 2)
+        elif shoulder2_left > -1.25:
+            shoulder2_left_penalty = -self.shoulder2_constraint_weight * ((shoulder2_left + 1.25) ** 2)
+        
+        shoulder2_penalty = shoulder2_right_penalty + shoulder2_left_penalty
+        total_penalty += shoulder2_penalty
+        
+        info['joint_constraints/shoulder2_right'] = shoulder2_right
+        info['joint_constraints/shoulder2_left'] = shoulder2_left
+        info['joint_constraints/shoulder2_penalty'] = shoulder2_penalty
+        
+        # ============================================================
+        # ELBOW CONSTRAINTS (Keep straight at 0)
+        # ============================================================
+        elbow_right = qpos[self.elbow_right_idx]
+        elbow_left = qpos[self.elbow_left_idx]
+        
+        # Quadratic penalty for deviation from 0
+        elbow_right_penalty = -self.elbow_constraint_weight * (elbow_right ** 2)
+        elbow_left_penalty = -self.elbow_constraint_weight * (elbow_left ** 2)
+        
+        elbow_penalty = elbow_right_penalty + elbow_left_penalty
+        total_penalty += elbow_penalty
+        
+        info['joint_constraints/elbow_right'] = elbow_right
+        info['joint_constraints/elbow_left'] = elbow_left
+        info['joint_constraints/elbow_penalty'] = elbow_penalty
+        
+        # ============================================================
+        # ANKLE_Y CONSTRAINTS (Forward flexion: -0.1 to 0)
+        # ============================================================
+        ankle_y_right = qpos[self.ankle_y_right_idx]
+        ankle_y_left = qpos[self.ankle_y_left_idx]
+        
+        ankle_y_right_penalty = 0.0
+        if ankle_y_right < -0.1:
+            # Too much dorsiflexion
+            ankle_y_right_penalty = -self.ankle_y_constraint_weight * ((ankle_y_right + 0.1) ** 2)
+        elif ankle_y_right > 0.0:
+            # Plantarflexion
+            ankle_y_right_penalty = -self.ankle_y_constraint_weight * (ankle_y_right ** 2)
+        
+        ankle_y_left_penalty = 0.0
+        if ankle_y_left < -0.1:
+            ankle_y_left_penalty = -self.ankle_y_constraint_weight * ((ankle_y_left + 0.1) ** 2)
+        elif ankle_y_left > 0.0:
+            ankle_y_left_penalty = -self.ankle_y_constraint_weight * (ankle_y_left ** 2)
+        
+        ankle_y_penalty = ankle_y_right_penalty + ankle_y_left_penalty
+        total_penalty += ankle_y_penalty
+        
+        info['joint_constraints/ankle_y_right'] = ankle_y_right
+        info['joint_constraints/ankle_y_left'] = ankle_y_left
+        info['joint_constraints/ankle_y_penalty'] = ankle_y_penalty
+        
+        # ============================================================
+        # ANKLE_X CONSTRAINTS (No lateral twist: keep at 0)
+        # ============================================================
+        ankle_x_right = qpos[self.ankle_x_right_idx]
+        ankle_x_left = qpos[self.ankle_x_left_idx]
+        
+        # Quadratic penalty for deviation from 0
+        ankle_x_right_penalty = -self.ankle_x_constraint_weight * (ankle_x_right ** 2)
+        ankle_x_left_penalty = -self.ankle_x_constraint_weight * (ankle_x_left ** 2)
+        
+        ankle_x_penalty = ankle_x_right_penalty + ankle_x_left_penalty
+        total_penalty += ankle_x_penalty
+        
+        info['joint_constraints/ankle_x_right'] = ankle_x_right
+        info['joint_constraints/ankle_x_left'] = ankle_x_left
+        info['joint_constraints/ankle_x_penalty'] = ankle_x_penalty
+        
+        # ============================================================
+        # TOTAL CONSTRAINT PENALTY (apply master weight)
+        # ============================================================
+        total_penalty *= self.joint_constraint_weight
+        info['joint_constraints/total_penalty'] = total_penalty
+        
+        return total_penalty, info
 
     def _calculate_gait_rewards(self):
         """ENHANCED: Advanced gait rewards with step frequency tracking"""
@@ -557,6 +730,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Gait rewards
         gait_reward, gait_info = self._calculate_gait_rewards()
 
+        # NEW: Joint constraint penalties
+        joint_constraint_penalty, joint_constraint_info = self._calculate_joint_constraint_penalties()
+
         # Termination and healthy reward
         terminated = not self.is_healthy
         healthy_reward = self.healthy_reward if not terminated else 0.0
@@ -620,10 +796,31 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'ultra_simple/balance_reward': 0.0,
             'ultra_simple/upright_reward': 0.0,
             'ultra_simple/neutral_pose_penalty': 0.0,
+
+            # NEW: Add joint constraint metrics (after ultra_simple metrics)
+            'joint_constraints/total_penalty': 0.0,
+            'joint_constraints/shoulder1_penalty': 0.0,
+            'joint_constraints/shoulder2_penalty': 0.0,
+            'joint_constraints/elbow_penalty': 0.0,
+            'joint_constraints/ankle_y_penalty': 0.0,
+            'joint_constraints/ankle_x_penalty': 0.0,
+            'joint_constraints/shoulder1_right': 0.0,
+            'joint_constraints/shoulder1_left': 0.0,
+            'joint_constraints/shoulder2_right': 0.0,
+            'joint_constraints/shoulder2_left': 0.0,
+            'joint_constraints/elbow_right': 0.0,
+            'joint_constraints/elbow_left': 0.0,
+            'joint_constraints/ankle_y_right': 0.0,
+            'joint_constraints/ankle_y_left': 0.0,
+            'joint_constraints/ankle_x_right': 0.0,
+            'joint_constraints/ankle_x_left': 0.0,
         }
         
         # Merge with gait_info (this may override some values)
         all_metrics.update(gait_info)
+
+        # NEW: Merge with joint constraint info
+        all_metrics.update(joint_constraint_info)
 
         # Now calculate phase-specific rewards and update metrics
         if self.training_phase == "standing" and self.walking_progress < 0.3:
@@ -706,6 +903,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 + arm_position_penalty
                 + upright_bonus
                 + torso_stability_penalty
+                + joint_constraint_penalty
             )
             
             # Joint position regularization

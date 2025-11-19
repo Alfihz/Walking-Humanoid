@@ -52,7 +52,11 @@ INFO_KEYWORDS = (
     'standing_phase/balance_reward', 'standing_phase/height_reward', 'standing_phase/velocity_penalty', 
     'standing_phase/torso_upright',
     'walking_phase/enhanced_forward_reward', 'walking_phase/scaled_gait_reward', 'walking_phase/velocity_tracking', 'walking_phase/sustained_speed_bonus',
-    'ultra_simple/balance_reward', 'ultra_simple/upright_reward', 'ultra_simple/neutral_pose_penalty'
+    'ultra_simple/balance_reward', 'ultra_simple/upright_reward', 'ultra_simple/neutral_pose_penalty',
+    'joint_constraints/total_penalty', 'joint_constraints/shoulder1_penalty', 'joint_constraints/shoulder2_penalty', 'joint_constraints/elbow_penalty',
+    'joint_constraints/ankle_y_penalty', 'joint_constraints/ankle_x_penalty', 'joint_constraints/shoulder1_right', 'joint_constraints/shoulder1_left',
+    'joint_constraints/shoulder2_right', 'joint_constraints/shoulder2_left', 'joint_constraints/elbow_right', 'joint_constraints/elbow_left',
+    'joint_constraints/ankle_y_right', 'joint_constraints/ankle_y_left', 'joint_constraints/ankle_x_right', 'joint_constraints/ankle_x_left',
 )
 
 
