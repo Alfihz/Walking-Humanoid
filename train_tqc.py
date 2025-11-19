@@ -21,7 +21,7 @@ from HumanoidWalkEnv import HumanoidWalkEnv  # Use the fixed version!
 # ============================================================================
 XML_FILENAME = "assets/humanoid_180_75.xml"
 SAVE_FREQ = 500_000  
-TOTAL_TIMESTEPS = 20_000_000
+TOTAL_TIMESTEPS = 100_000
 
 # Curriculum phases
 STANDING_PHASE_TIMESTEPS = int(0.20 * TOTAL_TIMESTEPS)  # 20% standing 
@@ -41,7 +41,7 @@ INFO_KEYWORDS = (
     'base_reward/healthy', 'base_reward/ctrl_cost', 'base_reward/contact_cost',
     'base_reward/gait_total', 'base_reward/total_reward',
     'gait_reward/contact_pattern_rew', 'gait_reward/clearance_rew', 'gait_reward/com_smoothness_pen', 
-    'gait_reward/orientation_pen', 'gait_reward/clearance_achieved', 'gait_reward/alternation_reward', 'gait_reward/step_frequency_reward',
+    'gait_reward/orientation_pen', 'gait_reward/clearance_achieved', 'gait_reward/alternation_reward', 'gait_reward/step_frequency_reward', 'gait_reward/stride_length_reward',
     'env_metrics/left_contact', 'env_metrics/right_contact', 'env_metrics/no_contact', 
     'env_metrics/both_contact', 'env_metrics/single_support', 'env_metrics/steps_taken',
     'env_metrics/forward_velocity', 'env_metrics/x_position', 'env_metrics/y_position', 'env_metrics/z_position',
@@ -57,6 +57,7 @@ INFO_KEYWORDS = (
     'joint_constraints/ankle_y_penalty', 'joint_constraints/ankle_x_penalty', 'joint_constraints/shoulder1_right', 'joint_constraints/shoulder1_left',
     'joint_constraints/shoulder2_right', 'joint_constraints/shoulder2_left', 'joint_constraints/elbow_right', 'joint_constraints/elbow_left',
     'joint_constraints/ankle_y_right', 'joint_constraints/ankle_y_left', 'joint_constraints/ankle_x_right', 'joint_constraints/ankle_x_left',
+    'joint_constraints/abdomen_penalty',
 )
 
 

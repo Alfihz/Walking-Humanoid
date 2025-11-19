@@ -140,11 +140,30 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.ankle_y_constraint_weight = 1.2     # Forward ankle flexion
         self.ankle_x_constraint_weight = 1.0     # Lateral ankle stability
 
+        # Coordinated arm swing weights
+        self.arm_swing_reward_weight = 1.5  # Reward for natural arm swing
+        self.arm_swing_coordination_weight = 2.0  # Reward for arm-leg coordination
+
+        # Abdomen constraint weights
+        self.abdomen_x_constraint_weight = 2.0  # Strong penalty for side bending
+        self.abdomen_y_constraint_weight = 1.5  # Moderate penalty for forward/back
+        self.abdomen_z_constraint_weight = 1.8  # Strong penalty for twisting
+
+        # Enhanced stride rewards
+        self.stride_length_reward_weight = 2.5  # Reward for good stride length
+        self.single_support_reward_weight = 3.0  # Reward for clear single support phase
+        self.step_completion_bonus = 5.0  # Bonus for completing full step cycle
+        self.double_support_penalty_weight = 2.0  # Penalize prolonged double support
+
         # ============================================================
         # JOINT INDICES (based on XML structure)
         # ============================================================
         # qpos indices (first 7 are free joint: x, y, z, qw, qx, qy, qz)
         # Then body joints in order they appear in XML:
+        # Abdomen joint indices (torso bending)
+        self.abdomen_x_idx = 9   # Side bending
+        self.abdomen_y_idx = 8   # Forward/backward bending  
+        self.abdomen_z_idx = 7   # Twisting
         self.shoulder1_right_idx = 24  # shoulder1_right joint
         self.shoulder2_right_idx = 25  # shoulder2_right joint
         self.elbow_right_idx = 26      # elbow_right joint
@@ -274,32 +293,35 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         qpos = self.data.qpos
         
         # ============================================================
-        # SHOULDER1 CONSTRAINTS (Arm Swing: 0 to 1)
+        # NEW: ABDOMEN CONSTRAINTS (Keep torso upright)
         # ============================================================
-        shoulder1_right = qpos[self.shoulder1_right_idx]
-        shoulder1_left = qpos[self.shoulder1_left_idx]
+        # Abdomen joints should stay near 0 (upright torso)
         
-        shoulder1_right_penalty = 0.0
-        if shoulder1_right < 0.0:
-            # Penalize backward swing beyond 0
-            shoulder1_right_penalty = -self.shoulder1_constraint_weight * (shoulder1_right ** 2)
-        elif shoulder1_right > 1.0:
-            # Penalize forward swing beyond 1
-            shoulder1_right_penalty = -self.shoulder1_constraint_weight * ((shoulder1_right - 1.0) ** 2)
+        abdomen_x = qpos[self.abdomen_x_idx]  # Side bending
+        abdomen_y = qpos[self.abdomen_y_idx]  # Forward/backward bending
+        abdomen_z = qpos[self.abdomen_z_idx]  # Twisting
         
-        shoulder1_left_penalty = 0.0
-        if shoulder1_left < 0.0:
-            shoulder1_left_penalty = -self.shoulder1_constraint_weight * (shoulder1_left ** 2)
-        elif shoulder1_left > 1.0:
-            shoulder1_left_penalty = -self.shoulder1_constraint_weight * ((shoulder1_left - 1.0) ** 2)
+        # Allow slight forward lean (up to 0.1 radians), but penalize bending
+        abdomen_y_penalty = 0.0
+        if abdomen_y < -0.1:  # Backward lean
+            abdomen_y_penalty = -self.abdomen_y_constraint_weight * ((abdomen_y + 0.1) ** 2)
+        elif abdomen_y > 0.2:  # Too much forward lean
+            abdomen_y_penalty = -self.abdomen_y_constraint_weight * ((abdomen_y - 0.2) ** 2)
         
-        shoulder1_penalty = shoulder1_right_penalty + shoulder1_left_penalty
-        total_penalty += shoulder1_penalty
+        # Side bending should be minimal
+        abdomen_x_penalty = -self.abdomen_x_constraint_weight * (abdomen_x ** 2)
         
-        info['joint_constraints/shoulder1_right'] = shoulder1_right
-        info['joint_constraints/shoulder1_left'] = shoulder1_left
-        info['joint_constraints/shoulder1_penalty'] = shoulder1_penalty
+        # Twisting should be minimal
+        abdomen_z_penalty = -self.abdomen_z_constraint_weight * (abdomen_z ** 2)
         
+        abdomen_penalty = abdomen_x_penalty + abdomen_y_penalty + abdomen_z_penalty
+        total_penalty += abdomen_penalty
+        
+        info['joint_constraints/abdomen_x'] = abdomen_x
+        info['joint_constraints/abdomen_y'] = abdomen_y
+        info['joint_constraints/abdomen_z'] = abdomen_z
+        info['joint_constraints/abdomen_penalty'] = abdomen_penalty
+
         # ============================================================
         # SHOULDER2 CONSTRAINTS (Keep arms at sides: -1.34 to -1.25)
         # ============================================================
@@ -307,7 +329,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         shoulder2_left = qpos[self.shoulder2_left_idx]
         
         shoulder2_right_penalty = 0.0
-        if shoulder2_right < -1.34:
+        if shoulder2_right < -1.50:
             # Too far down/back
             shoulder2_right_penalty = -self.shoulder2_constraint_weight * ((shoulder2_right + 1.50) ** 2)
         elif shoulder2_right > -1.25:
@@ -315,7 +337,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             shoulder2_right_penalty = -self.shoulder2_constraint_weight * ((shoulder2_right + 1.25) ** 2)
         
         shoulder2_left_penalty = 0.0
-        if shoulder2_left < -1.34:
+        if shoulder2_left < -1.50:
             shoulder2_left_penalty = -self.shoulder2_constraint_weight * ((shoulder2_left + 1.50) ** 2)
         elif shoulder2_left > -1.25:
             shoulder2_left_penalty = -self.shoulder2_constraint_weight * ((shoulder2_left + 1.25) ** 2)
@@ -396,6 +418,79 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         
         return total_penalty, info
 
+    def _calculate_arm_swing_rewards(self, left_contact, right_contact):
+        """
+        NEW: Reward natural arm swing coordinated with leg movement.
+        
+        Human walking pattern:
+        - Right leg forward → Left arm should swing forward (positive shoulder1)
+        - Left leg forward → Right arm should swing forward (positive shoulder1)
+        
+        Returns:
+            reward: Positive reward for natural coordinated arm swing
+            info: Metrics dictionary
+        """
+        info = {}
+        reward = 0.0
+        
+        # Get arm positions
+        shoulder1_right = self.data.qpos[self.shoulder1_right_idx]
+        shoulder1_left = self.data.qpos[self.shoulder1_left_idx]
+        
+        # Get arm velocities
+        shoulder1_right_vel = self.data.qvel[self.shoulder1_right_idx - 7]  # Adjust for free joint
+        shoulder1_left_vel = self.data.qvel[self.shoulder1_left_idx - 7]
+        
+        # ============================================================
+        # 1. REWARD FOR ARM MOVEMENT (any swing is good)
+        # ============================================================
+        # Encourage arms to move, not stay frozen
+        arm_movement = abs(shoulder1_right_vel) + abs(shoulder1_left_vel)
+        movement_reward = self.arm_swing_reward_weight * min(arm_movement, 2.0)  # Cap at 2.0
+        reward += movement_reward
+        info['arm_swing/movement_reward'] = movement_reward
+        
+        # ============================================================
+        # 2. REWARD FOR COORDINATION (opposite arm-leg swing)
+        # ============================================================
+        # When right leg is in stance (contact), left arm should be forward
+        # When left leg is in stance (contact), right arm should be forward
+        
+        coordination_reward = 0.0
+        
+        # Right leg stance phase - reward left arm forward
+        if right_contact and not left_contact:
+            # Left arm forward (positive shoulder1_left) is good
+            if shoulder1_left > 0.2:  # At least 0.2 radians forward
+                coordination_reward += 1.5 * shoulder1_left
+            # Right arm backward (negative/small shoulder1_right) is good
+            if shoulder1_right < 0.5:
+                coordination_reward += 0.5 * (0.5 - shoulder1_right)
+        
+        # Left leg stance phase - reward right arm forward
+        elif left_contact and not right_contact:
+            # Right arm forward (positive shoulder1_right) is good
+            if shoulder1_right > 0.2:
+                coordination_reward += 1.5 * shoulder1_right
+            # Left arm backward (negative/small shoulder1_left) is good
+            if shoulder1_left < 0.5:
+                coordination_reward += 0.5 * (0.5 - shoulder1_left)
+        
+        coordination_reward *= self.arm_swing_coordination_weight
+        reward += coordination_reward
+        info['arm_swing/coordination_reward'] = coordination_reward
+        
+        # ============================================================
+        # 3. KEEP SHOULDER2 CONSTRAINT (arms at sides, not spread)
+        # ============================================================
+        # This one we still want - prevents arms from spreading wide
+        
+        info['arm_swing/shoulder1_right'] = shoulder1_right
+        info['arm_swing/shoulder1_left'] = shoulder1_left
+        info['arm_swing/total_reward'] = reward
+        
+        return reward, info
+
     def _calculate_gait_rewards(self):
         """ENHANCED: Advanced gait rewards with step frequency tracking"""
         gait_reward = 0.0
@@ -407,7 +502,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         
         info['env_metrics/left_contact'] = float(left_contact)
         info['env_metrics/right_contact'] = float(right_contact)
-        
+
         # Detect step transitions
         left_touchdown = left_contact and not self.last_left_contact
         right_touchdown = right_contact and not self.last_right_contact
@@ -415,6 +510,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # ENHANCED: Reward alternating steps with step frequency tracking
         alternation_reward = 0.0
         step_frequency_reward = 0.0
+        stride_length_reward = 0.0
 
         # Hip progression
         current_hip_x = self.data.qpos[0]  # Root X position
@@ -426,9 +522,16 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             self.last_swing_foot = 'left'
 
             if hip_progression > 0.001:
-                alternation_reward = 3.0
+                alternation_reward = 5.0
+
+                # NEW: Stride length reward
+                if hip_progression > 0.05:  # Good stride length (5cm+)
+                    stride_length_reward = self.stride_length_reward_weight * min(hip_progression * 20, 5.0)
+            
+                # NEW: Step completion bonus
+                alternation_reward += self.step_completion_bonus
             else:
-                alternation_reward = -5.0
+                alternation_reward = -8.0  # INCREASED penalty from -5.0
             
             # Track step timing
             current_time = self.data.time
@@ -448,9 +551,15 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             self.last_swing_foot = 'right'
 
             if hip_progression > 0.001:
-                alternation_reward = 3.0
+                alternation_reward = 5.0
+                # NEW: Stride length reward
+                if hip_progression > 0.05:
+                    stride_length_reward = self.stride_length_reward_weight * min(hip_progression * 20, 5.0)
+                
+                # NEW: Step completion bonus
+                alternation_reward += self.step_completion_bonus
             else:
-                alternation_reward = -5.0
+                alternation_reward = -8.0  # INCREASED penalty from -5.0
             
             # Track step timing
             current_time = self.data.time
@@ -477,9 +586,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             frequency_error = abs(actual_frequency - self.step_frequency_target)
             step_frequency_reward = self.step_frequency_weight * np.exp(-2.0 * frequency_error)
         
-        gait_reward += alternation_reward + step_frequency_reward
+        gait_reward += alternation_reward + step_frequency_reward + stride_length_reward
         info['gait_reward/alternation_reward'] = alternation_reward
         info['gait_reward/step_frequency_reward'] = step_frequency_reward
+        info['gait_reward/stride_length_reward'] = stride_length_reward
 
         no_feet_contact = not left_contact and not right_contact
         both_feet_contact = left_contact and right_contact
@@ -493,19 +603,34 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         contact_pattern_reward = 0.0
         if no_feet_contact:
             # Heavy penalty for jumping/hopping
-            contact_pattern_reward = -self.feet_air_time_penalty * 2.5
+            contact_pattern_reward = -self.feet_air_time_penalty * 3.0
         elif single_support:
             # Strong reward for proper single support phase
             if len(self.velocity_history) > 10:
                 avg_velocity = np.mean(self.velocity_history[-10:])
-                if avg_velocity > 0.05:
-                    contact_pattern_reward = 2.0  # Increased from 1.5
+                if avg_velocity > 0.1:
+                    contact_pattern_reward = self.single_support_reward_weight
+                    # Extra reward for good velocity during single support
+                    if avg_velocity > 0.3:
+                        contact_pattern_reward += 2.0
                 else:
                     contact_pattern_reward = -1.0  # Penalty for slow movement
                 
         elif both_feet_contact:
-            # Small penalty for double support (should be brief)
-            contact_pattern_reward = -0.3  # Slightly increased from -0.5
+            # Penalize PROLONGED double support (it should be brief)
+            # Track how long we've been in double support
+            if not hasattr(self, 'double_support_duration'):
+                self.double_support_duration = 0
+            self.double_support_duration += 1
+            
+            if self.double_support_duration > 5:  # More than 5 timesteps
+                contact_pattern_reward = -self.double_support_penalty_weight * (self.double_support_duration - 5)
+            else:
+                contact_pattern_reward = -0.5  # Small penalty for double support
+        else:
+            # Reset double support counter
+            if hasattr(self, 'double_support_duration'):
+                self.double_support_duration = 0
         
         gait_reward += self.contact_pattern_weight * contact_pattern_reward
         info['gait_reward/contact_pattern_rew'] = self.contact_pattern_weight * contact_pattern_reward
@@ -733,6 +858,11 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # NEW: Joint constraint penalties
         joint_constraint_penalty, joint_constraint_info = self._calculate_joint_constraint_penalties()
 
+        # Arm swing rewards
+        left_contact = self._check_foot_contact_mujoco(self.left_foot_geoms)
+        right_contact = self._check_foot_contact_mujoco(self.right_foot_geoms)
+        arm_swing_reward, arm_swing_info = self._calculate_arm_swing_rewards(left_contact, right_contact)
+
         # Termination and healthy reward
         terminated = not self.is_healthy
         healthy_reward = self.healthy_reward if not terminated else 0.0
@@ -814,6 +944,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'joint_constraints/ankle_y_left': 0.0,
             'joint_constraints/ankle_x_right': 0.0,
             'joint_constraints/ankle_x_left': 0.0,
+            'joint_constraints/abdomen_penalty': 0.0,
         }
         
         # Merge with gait_info (this may override some values)
@@ -821,6 +952,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
 
         # NEW: Merge with joint constraint info
         all_metrics.update(joint_constraint_info)
+
+        all_metrics.update(arm_swing_info)
 
         # Now calculate phase-specific rewards and update metrics
         if self.training_phase == "standing" and self.walking_progress < 0.3:
@@ -904,6 +1037,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 + upright_bonus
                 + torso_stability_penalty
                 + joint_constraint_penalty
+                + arm_swing_reward
             )
             
             # Joint position regularization
@@ -912,14 +1046,16 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             standing_reward += neutral_pose_penalty
             walking_reward += neutral_pose_penalty
             
+            distance_covered = self.data.qpos[0] - self.episode_start_x
+            insufficient_movement_penalty = 0.0
+            if len(self.step_time_history) > 20 and distance_covered < 0.1:
+                insufficient_movement_penalty = -20.0  # Penalty for not moving sufficiently
+
             # Blend rewards based on curriculum progress
             alpha_standing = 1.0 - self.walking_progress
             alpha_walking = self.walking_progress
             total_reward = alpha_standing * standing_reward + alpha_walking * walking_reward
-
-            distance_covered = self.data.qpos[0] - self.episode_start_x
-            if len(self.step_time_history) > 20 and distance_covered < 0.1:
-                total_reward = -20.0  # Penalty for not moving sufficiently
+            total_reward += insufficient_movement_penalty
             
             # Update all phase-specific metrics
             all_metrics.update({
