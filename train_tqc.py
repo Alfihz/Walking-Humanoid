@@ -8,6 +8,7 @@ import torch
 import os
 import datetime
 import numpy as np
+import shutil
 from sb3_contrib import TQC
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
@@ -41,7 +42,7 @@ INFO_KEYWORDS = (
     'base_reward/healthy', 'base_reward/ctrl_cost', 'base_reward/contact_cost',
     'base_reward/gait_total', 'base_reward/total_reward',
     'gait_reward/contact_pattern_rew', 'gait_reward/clearance_rew', 'gait_reward/com_smoothness_pen', 
-    'gait_reward/orientation_pen', 'gait_reward/clearance_achieved', 'gait_reward/alternation_reward', 'gait_reward/step_frequency_reward', 'gait_reward/stride_length_reward',
+    'gait_reward/orientation_pen', 'gait_reward/alternation_reward', 'gait_reward/step_frequency_reward', 'gait_reward/stride_length_reward',
     'env_metrics/left_contact', 'env_metrics/right_contact', 'env_metrics/no_contact', 
     'env_metrics/both_contact', 'env_metrics/single_support', 'env_metrics/steps_taken',
     'env_metrics/forward_velocity', 'env_metrics/x_position', 'env_metrics/y_position', 'env_metrics/z_position',
@@ -397,6 +398,24 @@ if __name__ == "__main__":
         print(f"⏱️  Duration: {end_time - start_time}")
         print(f"💾 Model saved: {final_model_path}")
         print(f"{'='*70}\n")
+        
+        # Automatically zip the monitors folder
+        monitors_dir = os.path.join(TENSORBOARD_LOG_DIR, 'monitors')
+        if os.path.exists(monitors_dir):
+            # Create zip filename with run info
+            run_name = os.path.basename(MODEL_CHECKPOINT_DIR)
+            zip_filename = f"{run_name}_monitors"
+            zip_path = os.path.join(TENSORBOARD_LOG_DIR, zip_filename)
+            
+            print(f"📦 Zipping monitors folder...")
+            try:
+                shutil.make_archive(zip_path, 'zip', monitors_dir)
+                print(f"✅ Monitors zipped: {zip_path}.zip")
+                print(f"   ({len(os.listdir(monitors_dir))} CSV files included)")
+            except Exception as e:
+                print(f"⚠️  Warning: Failed to zip monitors folder: {e}")
+        else:
+            print("⚠️  No monitors folder found to zip")
         
         vec_env.close()
         print("👋 Done!")

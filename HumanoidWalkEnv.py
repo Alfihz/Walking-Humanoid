@@ -323,6 +323,32 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/abdomen_penalty'] = abdomen_penalty
 
         # ============================================================
+        # SHOULDER1 CONSTRAINTS (Natural arm swing: 0 to 1 rad)
+        # Prevents backward arm swing
+        # ============================================================
+        shoulder1_right = qpos[self.shoulder1_right_idx]
+        shoulder1_left = qpos[self.shoulder1_left_idx]
+        
+        shoulder1_right_penalty = 0.0
+        if shoulder1_right < 0.0:  # Backward swing (negative)
+            shoulder1_right_penalty = -self.shoulder1_constraint_weight * (shoulder1_right ** 2)
+        elif shoulder1_right > 1.0:  # Too much forward swing
+            shoulder1_right_penalty = -self.shoulder1_constraint_weight * ((shoulder1_right - 1.0) ** 2)
+        
+        shoulder1_left_penalty = 0.0
+        if shoulder1_left < 0.0:  # Backward swing (negative)
+            shoulder1_left_penalty = -self.shoulder1_constraint_weight * (shoulder1_left ** 2)
+        elif shoulder1_left > 1.0:  # Too much forward swing
+            shoulder1_left_penalty = -self.shoulder1_constraint_weight * ((shoulder1_left - 1.0) ** 2)
+        
+        shoulder1_penalty = shoulder1_right_penalty + shoulder1_left_penalty
+        total_penalty += shoulder1_penalty
+        
+        info['joint_constraints/shoulder1_right'] = shoulder1_right
+        info['joint_constraints/shoulder1_left'] = shoulder1_left
+        info['joint_constraints/shoulder1_penalty'] = shoulder1_penalty
+
+        # ============================================================
         # SHOULDER2 CONSTRAINTS (Keep arms at sides: -1.34 to -1.25)
         # ============================================================
         shoulder2_right = qpos[self.shoulder2_right_idx]
@@ -465,18 +491,24 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             # Left arm forward (positive shoulder1_left) is good
             if shoulder1_left > 0.2:  # At least 0.2 radians forward
                 coordination_reward += 1.5 * shoulder1_left
-            # Right arm backward (negative/small shoulder1_right) is good
-            if shoulder1_right < 0.5:
-                coordination_reward += 0.5 * (0.5 - shoulder1_right)
+            
+            # Right arm should be back/neutral - penalize if too far backward
+            if shoulder1_right < 0.0:  # Backward (negative)
+                coordination_reward -= 1.0 * abs(shoulder1_right)  # Penalty for backward
+            elif shoulder1_right < 0.3:  # Slightly back/neutral is OK
+                coordination_reward += 0.3 * (0.3 - shoulder1_right)  # Small reward
         
         # Left leg stance phase - reward right arm forward
         elif left_contact and not right_contact:
             # Right arm forward (positive shoulder1_right) is good
             if shoulder1_right > 0.2:
                 coordination_reward += 1.5 * shoulder1_right
-            # Left arm backward (negative/small shoulder1_left) is good
-            if shoulder1_left < 0.5:
-                coordination_reward += 0.5 * (0.5 - shoulder1_left)
+            
+            # Left arm should be back/neutral - penalize if too far backward
+            if shoulder1_left < 0.0:  # Backward (negative)
+                coordination_reward -= 1.0 * abs(shoulder1_left)  # Penalty for backward
+            elif shoulder1_left < 0.3:  # Slightly back/neutral is OK
+                coordination_reward += 0.3 * (0.3 - shoulder1_left)  # Small reward
         
         coordination_reward *= self.arm_swing_coordination_weight
         reward += coordination_reward
@@ -627,7 +659,15 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         contact_pattern_reward = 0.0
         if no_feet_contact:
             # Heavy penalty for jumping/hopping
-            contact_pattern_reward = -self.feet_air_time_penalty * 3.0
+            if not hasattr(self, 'airborne_duration'):
+                self.airborne_duration = 0
+            self.airborne_duration += 1
+            
+            # Allow very brief airborne phases (< 3 timesteps), penalize longer
+            if self.airborne_duration > 3:
+                contact_pattern_reward = -self.feet_air_time_penalty * (self.airborne_duration - 3)
+            else:
+                contact_pattern_reward = -2.0  # Small penalty for being airborne
         elif single_support:
             # Strong reward for proper single support phase
             if len(self.velocity_history) > 10:
@@ -661,13 +701,20 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 
         elif both_feet_contact:
             # Penalize PROLONGED double support (it should be brief)
+
+            # Reset airborne counter when feet touch ground
+            if hasattr(self, 'airborne_duration'):
+                self.airborne_duration = 0
+
             # Track how long we've been in double support
             if not hasattr(self, 'double_support_duration'):
                 self.double_support_duration = 0
             self.double_support_duration += 1
             
             if self.double_support_duration > 5:  # More than 5 timesteps
-                contact_pattern_reward = -self.double_support_penalty_weight * (self.double_support_duration - 5)
+                 # Cap penalty to avoid excessive punishment for brief double support
+                excess_duration = min(self.double_support_duration - 5, 5)  # Cap at 5 timesteps excess
+                contact_pattern_reward = -self.double_support_penalty_weight * excess_duration
             else:
                 contact_pattern_reward = -0.5  # Small penalty for double support
         else:
@@ -694,7 +741,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # ENHANCED: Swing foot clearance reward with higher minimum
         min_clearance_height = self.min_clearance_height  # Now 0.08m instead of 0.03m
         clearance_reward = 0.0
-        achieved_clearance = 0.0
+        # achieved_clearance = 0.0
 
         left_foot_z = self.data.site_xpos[self.left_foot_site_id][2]
         right_foot_z = self.data.site_xpos[self.right_foot_site_id][2]
@@ -727,7 +774,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         
         gait_reward += self.swing_clearance_weight * clearance_reward
         info['gait_reward/clearance_rew'] = self.swing_clearance_weight * clearance_reward
-        info['gait_reward/clearance_achieved'] = achieved_clearance
+        # info['gait_reward/clearance_achieved'] = achieved_clearance
 
         # CoM smoothness penalty
         com_vel = self.data.cvel[self.pelvis_id, :3]
@@ -743,16 +790,16 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         
         # NEW: Anti-skating penalties
         
-        # 1. Arm movement penalty - discourage using arms for momentum
-        # Get shoulder joint velocities (assuming joints 0-6 are base, 7+ are body joints)
-        if self.data.qvel.shape[0] > 10:  # Make sure we have arm joints
-            arm_velocities = self.data.qvel[21:27]  # First 6 body joints are typically arms
-            arm_movement = np.sum(np.square(arm_velocities))
-            arm_penalty = -self.arm_movement_penalty_weight * arm_movement
-            gait_reward += arm_penalty
-            info['gait_reward/arm_penalty'] = arm_penalty
-        else:
-            info['gait_reward/arm_penalty'] = 0.0
+        # # 1. Arm movement penalty - discourage using arms for momentum
+        # # Get shoulder joint velocities (assuming joints 0-6 are base, 7+ are body joints)
+        # if self.data.qvel.shape[0] > 10:  # Make sure we have arm joints
+        #     arm_velocities = self.data.qvel[21:27]  # First 6 body joints are typically arms
+        #     arm_movement = np.sum(np.square(arm_velocities))
+        #     arm_penalty = -self.arm_movement_penalty_weight * arm_movement
+        #     gait_reward += arm_penalty
+        #     info['gait_reward/arm_penalty'] = arm_penalty
+        # else:
+        #     info['gait_reward/arm_penalty'] = 0.0
         
         # 2. Torso rotation penalty - discourage using torso twist for momentum
         torso_angular_vel = self.data.cvel[self.torso_id, 3:]  # Angular velocity components
