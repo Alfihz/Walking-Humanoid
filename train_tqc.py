@@ -21,7 +21,7 @@ from HumanoidWalkEnv import HumanoidWalkEnv  # Use the fixed version!
 # ============================================================================
 XML_FILENAME = "assets/humanoid_180_75.xml"
 SAVE_FREQ = 500_000  
-TOTAL_TIMESTEPS = 100_000
+TOTAL_TIMESTEPS = 20_000_000
 
 # Curriculum phases
 STANDING_PHASE_TIMESTEPS = int(0.20 * TOTAL_TIMESTEPS)  # 20% standing 

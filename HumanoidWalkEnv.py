@@ -413,8 +413,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # ============================================================
         # TOTAL CONSTRAINT PENALTY (apply master weight)
         # ============================================================
-        total_penalty *= self.joint_constraint_weight
+        constraint_progress_scale = 0.2 + (0.8 * min(1.0, self.walking_progress * 2))
+        total_penalty *= self.joint_constraint_weight * constraint_progress_scale
         info['joint_constraints/total_penalty'] = total_penalty
+        info['joint_constraints/progress_scale'] = constraint_progress_scale
         
         return total_penalty, info
 
@@ -522,7 +524,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             self.last_swing_foot = 'left'
 
             if hip_progression > 0.001:
-                alternation_reward = 5.0
+                alternation_reward = 15.0
 
                 # NEW: Stride length reward
                 if hip_progression > 0.05:  # Good stride length (5cm+)
@@ -531,7 +533,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 # NEW: Step completion bonus
                 alternation_reward += self.step_completion_bonus
             else:
-                alternation_reward = -8.0  # INCREASED penalty from -5.0
+                alternation_reward = -20.0  # INCREASED penalty from -5.0
             
             # Track step timing
             current_time = self.data.time
@@ -591,6 +593,28 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['gait_reward/step_frequency_reward'] = step_frequency_reward
         info['gait_reward/stride_length_reward'] = stride_length_reward
 
+        if hasattr(self, 'steps_taken'):
+            if not hasattr(self, 'last_steps_check'):
+                self.last_steps_check = 0
+                self.last_steps_time = 0.0
+            
+            # Check every 0.5 seconds
+            if self.data.time - self.last_steps_time > 0.5:
+                steps_delta = self.steps_taken - self.last_steps_check
+                
+                if steps_delta == 0:
+                    # No steps in 0.5 seconds = BAD
+                    static_penalty = -10.0
+                    gait_reward += static_penalty
+                    info['gait_reward/static_standing_penalty'] = static_penalty
+                else:
+                    info['gait_reward/static_standing_penalty'] = 0.0
+                
+                self.last_steps_check = self.steps_taken
+                self.last_steps_time = self.data.time
+            else:
+                info['gait_reward/static_standing_penalty'] = 0.0
+
         no_feet_contact = not left_contact and not right_contact
         both_feet_contact = left_contact and right_contact
         single_support = (left_contact and not right_contact) or (right_contact and not left_contact)
@@ -608,13 +632,32 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             # Strong reward for proper single support phase
             if len(self.velocity_history) > 10:
                 avg_velocity = np.mean(self.velocity_history[-10:])
-                if avg_velocity > 0.1:
+
+                # Check if steps are happening
+                if hasattr(self, 'steps_taken') and hasattr(self, 'last_single_support_steps'):
+                    steps_since_last = self.steps_taken - self.last_single_support_steps
+                else:
+                    steps_since_last = 0
+                    self.last_single_support_steps = getattr(self, 'steps_taken', 0)
+
+                # Reset counter periodically
+                if not hasattr(self, 'single_support_counter'):
+                    self.single_support_counter = 0
+                self.single_support_counter += 1
+                
+                if self.single_support_counter > 50:  # Every 50 timesteps
+                    self.last_single_support_steps = self.steps_taken
+                    self.single_support_counter = 0
+
+                if avg_velocity > 0.1 and steps_since_last > 0:
                     contact_pattern_reward = self.single_support_reward_weight
                     # Extra reward for good velocity during single support
                     if avg_velocity > 0.3:
                         contact_pattern_reward += 2.0
                 else:
-                    contact_pattern_reward = -1.0  # Penalty for slow movement
+                    contact_pattern_reward = -5.0  # Penalty for slow movement
+            else:
+                contact_pattern_reward = 0.0
                 
         elif both_feet_contact:
             # Penalize PROLONGED double support (it should be brief)
@@ -1016,6 +1059,20 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             # Scale gait penalties during curriculum
             gait_penalty_scale = max(0.3, self.walking_progress)
             scaled_gait_reward = gait_reward * gait_penalty_scale
+
+            step_rate_bonus = 0.0
+            if hasattr(self, 'steps_taken') and len(self.velocity_history) > 100:
+                time_elapsed = self.data.time
+                if time_elapsed > 1.0:  # After 1 second
+                    steps_per_second = self.steps_taken / time_elapsed
+                    
+                    # Target: at least 1 step per second
+                    if steps_per_second > 0.8:
+                        step_rate_bonus = 5.0
+                    elif steps_per_second > 0.3:
+                        step_rate_bonus = 0.0
+                    else:
+                        step_rate_bonus = -10.0  # Heavy penalty for not stepping
             
             walking_reward = (
                 enhanced_forward_reward
@@ -1038,6 +1095,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 + torso_stability_penalty
                 + joint_constraint_penalty
                 + arm_swing_reward
+                + step_rate_bonus
             )
             
             # Joint position regularization
