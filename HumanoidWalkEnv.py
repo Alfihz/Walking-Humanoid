@@ -78,8 +78,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip, training_phase=training_phase, **kwargs)
 
-        # OPTIMIZED: Adjusted reward weights for quality over speed
-        self.forward_reward_weight = 3.0  # Keep same
+        # CRITICAL FIX: Make forward progress the primary goal
+        self.forward_reward_weight = 10.0  # Increased from 3.0 - forward movement must be priority
         self.ctrl_cost_weight = 0.01  # Keep same
         self.healthy_reward = 2.0  # Keep same
         self.contact_cost_weight = 5e-7
@@ -94,7 +94,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.contact_pattern_weight = 2.0  # Keep same
         self.swing_clearance_weight = 2.5  # INCREASED from 1.2 - much stronger emphasis on lifting legs
         self.com_smoothness_weight = 0.6  # Keep same
-        self.feet_air_time_penalty = 10.0  # Keep same
+        self.feet_air_time_penalty = 5.0  # Reduced from 10.0 - allow brief airborne phases
         self.orientation_weight = 0.2  # Keep same
         
         # NEW: Step frequency tracking for rhythmic walking
@@ -151,9 +151,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
 
         # Enhanced stride rewards
         self.stride_length_reward_weight = 2.5  # Reward for good stride length
-        self.single_support_reward_weight = 3.0  # Reward for clear single support phase
-        self.step_completion_bonus = 5.0  # Bonus for completing full step cycle
-        self.double_support_penalty_weight = 2.0  # Penalize prolonged double support
+        self.single_support_reward_weight = 1.0  # Reduced from 3.0 - was too easy to exploit
+        self.step_completion_bonus = 20.0  # Increased from 5.0 - much stronger incentive to actually step
+        self.double_support_penalty_weight = 1.0  # Reduced from 2.0 - needed for weight transfer
 
         # ============================================================
         # JOINT INDICES (based on XML structure)
@@ -525,7 +525,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         
         return reward, info
 
-    def _calculate_gait_rewards(self):
+    def _calculate_gait_rewards(self, forward_velocity):
         """ENHANCED: Advanced gait rewards with step frequency tracking"""
         gait_reward = 0.0
         info = {}
@@ -689,10 +689,11 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                     self.last_single_support_steps = self.steps_taken
                     self.single_support_counter = 0
 
-                if avg_velocity > 0.1 and steps_since_last > 0:
+                # Only reward single support if ACTUALLY walking forward
+                if avg_velocity > 0.2 and steps_since_last > 0:  # Increased from 0.1
                     contact_pattern_reward = self.single_support_reward_weight
                     # Extra reward for good velocity during single support
-                    if avg_velocity > 0.3:
+                    if avg_velocity > 0.4:  # Increased from 0.3
                         contact_pattern_reward += 2.0
                 else:
                     contact_pattern_reward = -5.0  # Penalty for slow movement
@@ -738,10 +739,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             gait_reward -= 1.0
             info['gait_reward/narrow_stance_penalty'] = -1.0
 
-        # ENHANCED: Swing foot clearance reward with higher minimum
-        min_clearance_height = self.min_clearance_height  # Now 0.08m instead of 0.03m
+        # CRITICAL FIX: Swing foot clearance reward - ONLY during forward movement
+        min_clearance_height = self.min_clearance_height  # 0.08m
         clearance_reward = 0.0
-        # achieved_clearance = 0.0
 
         left_foot_z = self.data.site_xpos[self.left_foot_site_id][2]
         right_foot_z = self.data.site_xpos[self.right_foot_site_id][2]
@@ -750,27 +750,47 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
 
         optimal_clearance = 0.10
         
-        if left_contact and not right_contact:  # Right foot swinging
-            if right_foot_z >= min_clearance_height:
-                clearance_deviation = abs(right_foot_z - optimal_clearance)
+        # CRITICAL: Only reward clearance if body is moving forward!
+        current_forward_vel = forward_velocity
+        
+        if current_forward_vel > 0.1:  # Must be moving forward (at least 10cm/s)
+            
+            if left_contact and not right_contact:  # Right foot swinging
+                # Check if right foot is moving forward (not just held up)
+                try:
+                    right_foot_vel = self.data.cvel[self.model.body('foot_right').id, 0]  # X velocity
+                    foot_moving_forward = right_foot_vel > -0.1  # Allow slight backward for natural gait
+                except:
+                    foot_moving_forward = True  # If can't check, assume OK
                 
-                if clearance_deviation < 0.04:
-                    clearance_reward = 2.0 - (clearance_deviation * 10)
-                else:
-                    clearance_reward = 0.5
-            else:
-                clearance_reward = -1.0  # Penalty for dragging foot
+                if foot_moving_forward and right_foot_z >= min_clearance_height:
+                    clearance_deviation = abs(right_foot_z - optimal_clearance)
+                    
+                    if clearance_deviation < 0.04:
+                        clearance_reward = 2.0 - (clearance_deviation * 10)
+                    else:
+                        clearance_reward = 0.5
+                elif right_foot_z < min_clearance_height and foot_moving_forward:
+                    clearance_reward = -1.0  # Penalty for dragging foot
 
-        elif right_contact and not left_contact:  # Left foot swinging
-            if left_foot_z >= min_clearance_height:
-                clearance_deviation = abs(left_foot_z - optimal_clearance)
+            elif right_contact and not left_contact:  # Left foot swinging
+                try:
+                    left_foot_vel = self.data.cvel[self.model.body('foot_left').id, 0]
+                    foot_moving_forward = left_foot_vel > -0.1
+                except:
+                    foot_moving_forward = True
+                
+                if foot_moving_forward and left_foot_z >= min_clearance_height:
+                    clearance_deviation = abs(left_foot_z - optimal_clearance)
 
-                if clearance_deviation < 0.04:
-                    clearance_reward = 2.0 - (clearance_deviation * 10)
-                else:
-                    clearance_reward = 0.5
-            else:
-                clearance_reward = -1.0  # Penalty for dragging foot
+                    if clearance_deviation < 0.04:
+                        clearance_reward = 2.0 - (clearance_deviation * 10)
+                    else:
+                        clearance_reward = 0.5
+                elif left_foot_z < min_clearance_height and foot_moving_forward:
+                    clearance_reward = -1.0
+        
+        # If not moving forward, NO clearance reward!
         
         gait_reward += self.swing_clearance_weight * clearance_reward
         info['gait_reward/clearance_rew'] = self.swing_clearance_weight * clearance_reward
@@ -943,7 +963,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         contact_cost = self.contact_cost_weight * np.sum(np.square(self.contact_forces))
 
         # Gait rewards
-        gait_reward, gait_info = self._calculate_gait_rewards()
+        gait_reward, gait_info = self._calculate_gait_rewards(forward_velocity)
 
         # NEW: Joint constraint penalties
         joint_constraint_penalty, joint_constraint_info = self._calculate_joint_constraint_penalties()
@@ -1081,6 +1101,17 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             progressive_forward_weight = self.walking_progress * self.forward_reward_weight
             enhanced_forward_reward = progressive_forward_weight * forward_velocity
             
+            # ============================================================
+            # CRITICAL: Forward velocity requirement
+            # Prevent static exploitation (flamingo stance)
+            # ============================================================
+            avg_forward_vel = np.mean(self.velocity_history[-20:]) if len(self.velocity_history) > 20 else 0.0
+            
+            if avg_forward_vel < 0.1:  # Not moving forward
+                forward_requirement_penalty = -100.0  # Huge penalty for standing still
+            else:
+                forward_requirement_penalty = 0.0
+            
             # ENHANCED: Velocity tracking reward with better scaling
             MIN_SPEED = 0.1
             if len(self.velocity_history) > 10:
@@ -1143,6 +1174,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 + joint_constraint_penalty
                 + arm_swing_reward
                 + step_rate_bonus
+                + forward_requirement_penalty  # CRITICAL: Applies -100.0 penalty if not moving
             )
             
             # Joint position regularization
