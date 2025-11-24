@@ -150,10 +150,39 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.abdomen_z_constraint_weight = 1.8  # Strong penalty for twisting
 
         # Enhanced stride rewards
-        self.stride_length_reward_weight = 2.5  # Reward for good stride length
+        self.stride_length_reward_weight = 4.0  # Increased from 2.5 - stronger stride incentive
         self.single_support_reward_weight = 1.0  # Reduced from 3.0 - was too easy to exploit
         self.step_completion_bonus = 20.0  # Increased from 5.0 - much stronger incentive to actually step
         self.double_support_penalty_weight = 1.0  # Reduced from 2.0 - needed for weight transfer
+
+        # ============================================================
+        # VELOCITY CONTROL PARAMETERS - NEW!
+        # ============================================================
+        self.max_velocity = 0.7                        # Maximum acceptable speed
+        self.velocity_penalty_weight = 15.0            # Penalty for speeding
+        self.velocity_tracking_weight = 15.0           # Stronger target velocity tracking
+        self.optimal_velocity_min = 0.4                # Sweet spot lower bound
+        self.optimal_velocity_max = 0.6                # Sweet spot upper bound
+
+        # ============================================================
+        # STRIDE LENGTH PARAMETERS - NEW!
+        # ============================================================
+        self.min_stride_threshold = 0.10               # Minimum acceptable stride (10cm)
+        self.optimal_stride_min = 0.20                 # Optimal stride lower bound (20cm)
+        self.optimal_stride_max = 0.40                 # Optimal stride upper bound (40cm)
+        self.step_frequency_optimal = 1.0              # Target: 1 step per second
+        self.tiny_step_penalty_weight = 10.0           # Penalty for tiny steps
+
+        # ============================================================
+        # CONTACT PATTERN PARAMETERS - UPDATED!
+        # ============================================================
+        self.feet_air_time_penalty = 30.0              # Tripled from 10.0 to prevent running
+        self.ground_contact_reward_weight = 2.0        # NEW: Reward for ground contact
+        self.running_penalty_weight = 50.0             # NEW: Heavy penalty for running gait
+        self.max_airborne_ratio = 0.3                  # NEW: Max 30% airborne time
+        
+        # Tracking for running detection
+        self.recent_airborne_frames = []
 
         # ============================================================
         # JOINT INDICES (based on XML structure)
@@ -526,7 +555,11 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         return reward, info
 
     def _calculate_gait_rewards(self, forward_velocity):
-        """ENHANCED: Advanced gait rewards with step frequency tracking"""
+        """ENHANCED: Advanced gait rewards with step frequency tracking
+        
+        Args:
+            forward_velocity: Current forward velocity in m/s (from step method)
+        """
         gait_reward = 0.0
         info = {}
         
@@ -558,9 +591,22 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             if hip_progression > 0.001:
                 alternation_reward = 15.0
 
-                # NEW: Stride length reward
-                if hip_progression > 0.05:  # Good stride length (5cm+)
-                    stride_length_reward = self.stride_length_reward_weight * min(hip_progression * 20, 5.0)
+                # IMPROVED: Stride length reward with penalties for tiny steps
+                if hip_progression < 0.03:
+                    # Tiny steps (< 3cm) - PENALTY!
+                    stride_length_reward = -self.tiny_step_penalty_weight
+                elif hip_progression < self.min_stride_threshold:
+                    # Small steps (3-10cm) - minimal reward
+                    stride_length_reward = 5.0
+                elif hip_progression < self.optimal_stride_min:
+                    # Medium steps (10-20cm) - moderate reward
+                    stride_length_reward = 10.0 + (hip_progression - self.min_stride_threshold) * 50
+                elif hip_progression <= self.optimal_stride_max:
+                    # Optimal strides (20-40cm) - maximum reward
+                    stride_length_reward = 30.0
+                else:
+                    # Too long (>40cm) - slight penalty for overstriding
+                    stride_length_reward = 20.0 - (hip_progression - self.optimal_stride_max) * 30
             
                 # NEW: Step completion bonus
                 alternation_reward += self.step_completion_bonus
@@ -586,9 +632,23 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
 
             if hip_progression > 0.001:
                 alternation_reward = 5.0
-                # NEW: Stride length reward
-                if hip_progression > 0.05:
-                    stride_length_reward = self.stride_length_reward_weight * min(hip_progression * 20, 5.0)
+                
+                # IMPROVED: Stride length reward with penalties for tiny steps
+                if hip_progression < 0.03:
+                    # Tiny steps (< 3cm) - PENALTY!
+                    stride_length_reward = -self.tiny_step_penalty_weight
+                elif hip_progression < self.min_stride_threshold:
+                    # Small steps (3-10cm) - minimal reward
+                    stride_length_reward = 5.0
+                elif hip_progression < self.optimal_stride_min:
+                    # Medium steps (10-20cm) - moderate reward
+                    stride_length_reward = 10.0 + (hip_progression - self.min_stride_threshold) * 50
+                elif hip_progression <= self.optimal_stride_max:
+                    # Optimal strides (20-40cm) - maximum reward
+                    stride_length_reward = 30.0
+                else:
+                    # Too long (>40cm) - slight penalty for overstriding
+                    stride_length_reward = 20.0 - (hip_progression - self.optimal_stride_max) * 30
                 
                 # NEW: Step completion bonus
                 alternation_reward += self.step_completion_bonus
@@ -726,6 +786,33 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         gait_reward += self.contact_pattern_weight * contact_pattern_reward
         info['gait_reward/contact_pattern_rew'] = self.contact_pattern_weight * contact_pattern_reward
 
+        # ============================================================
+        # NEW: Running detection and ground contact reward
+        # ============================================================
+        # Track airborne time to detect running gait
+        self.recent_airborne_frames.append(1.0 if no_feet_contact else 0.0)
+        if len(self.recent_airborne_frames) > 20:
+            self.recent_airborne_frames.pop(0)
+
+        airborne_ratio = np.mean(self.recent_airborne_frames) if len(self.recent_airborne_frames) > 10 else 0.0
+        
+        # Penalize running gait (too much airborne time)
+        running_penalty = 0.0
+        if airborne_ratio > self.max_airborne_ratio:  # More than 30% airborne = running!
+            running_penalty = -self.running_penalty_weight * (airborne_ratio - self.max_airborne_ratio)
+        
+        gait_reward += running_penalty
+        info['gait_reward/running_penalty'] = running_penalty
+        info['env_metrics/airborne_ratio'] = airborne_ratio
+        
+        # Reward ground contact (walking, not running)
+        ground_contact_reward = 0.0
+        if left_contact or right_contact:
+            ground_contact_reward = self.ground_contact_reward_weight
+        
+        gait_reward += ground_contact_reward
+        info['gait_reward/ground_contact_reward'] = ground_contact_reward
+
         # Check if feet are moving too far laterally during steps
         left_foot_y = self.data.site_xpos[self.left_foot_site_id][1]
         right_foot_y = self.data.site_xpos[self.right_foot_site_id][1]
@@ -751,6 +838,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         optimal_clearance = 0.10
         
         # CRITICAL: Only reward clearance if body is moving forward!
+        # Use the forward_velocity passed from step() method
         current_forward_vel = forward_velocity
         
         if current_forward_vel > 0.1:  # Must be moving forward (at least 10cm/s)
@@ -962,7 +1050,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         ctrl_cost = self.ctrl_cost_weight * np.sum(np.square(action))
         contact_cost = self.contact_cost_weight * np.sum(np.square(self.contact_forces))
 
-        # Gait rewards
+        # Gait rewards (pass forward_velocity for clearance calculation)
         gait_reward, gait_info = self._calculate_gait_rewards(forward_velocity)
 
         # NEW: Joint constraint penalties
@@ -1097,9 +1185,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             # Standard curriculum blending (standing -> walking transition)
             standing_reward = balance_reward + height_reward + velocity_penalty + smooth_upright_reward - ctrl_cost
             
-            # Progressive forward reward
+            # Progressive forward reward (weight scales with curriculum)
             progressive_forward_weight = self.walking_progress * self.forward_reward_weight
-            enhanced_forward_reward = progressive_forward_weight * forward_velocity
             
             # ============================================================
             # CRITICAL: Forward velocity requirement
@@ -1112,22 +1199,46 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             else:
                 forward_requirement_penalty = 0.0
             
-            # ENHANCED: Velocity tracking reward with better scaling
+            # IMPROVED: Velocity tracking with speed limits and optimal range
             MIN_SPEED = 0.1
+            velocity_reward = 0.0
+            velocity_quality_scale = 1.0
+            
             if len(self.velocity_history) > 10:
                 avg_velocity = np.mean(self.velocity_history[-10:])
-                velocity_error = abs(avg_velocity - getattr(self, 'target_velocity', 0.5))
                 
-
-                if forward_velocity < MIN_SPEED:
-                    speed_penalty = -5.0 * (MIN_SPEED - forward_velocity)
+                # Penalty for going too fast
+                if forward_velocity > self.max_velocity:
+                    overspeed = forward_velocity - self.max_velocity
+                    velocity_reward = -self.velocity_penalty_weight * (overspeed ** 2)
+                    velocity_quality_scale = 0.3  # Heavily discount other rewards when speeding
+                    
+                # Reward for being in optimal velocity range
+                elif self.optimal_velocity_min <= avg_velocity <= self.optimal_velocity_max:
+                    velocity_reward = self.velocity_tracking_weight  # Strong reward for sweet spot!
+                    velocity_quality_scale = 1.0
+                    
+                # Moderate reward for being close to optimal range
+                elif 0.3 <= avg_velocity < self.optimal_velocity_min or self.optimal_velocity_max < avg_velocity <= 0.7:
+                    velocity_reward = self.velocity_tracking_weight * 0.5  # Half reward
+                    velocity_quality_scale = 0.8
+                    
+                # Penalty for too slow (below minimum)
+                elif forward_velocity < MIN_SPEED:
+                    velocity_reward = -5.0 * (MIN_SPEED - forward_velocity)
+                    velocity_quality_scale = 0.5
+                    
+                # Light penalty for being outside optimal but not too extreme
                 else:
-                    speed_penalty = 0.0
-
-                # Stronger reward for matching target velocity
-                velocity_reward = 2.0 * np.exp(-3.0 * velocity_error) + speed_penalty # Increased from 1.0 * exp(-2.0)
+                    velocity_error = abs(avg_velocity - 0.5)  # Distance from target
+                    velocity_reward = -10.0 * velocity_error
+                    velocity_quality_scale = 0.7
             else:
                 velocity_reward = 0.0
+                velocity_quality_scale = 1.0
+            
+            # Apply velocity quality scale to forward reward
+            enhanced_forward_reward = progressive_forward_weight * forward_velocity * velocity_quality_scale
             
             if all(v > 0.2 for v in self.velocity_history[-20:]):
                 sustained_bonus = 10.0  # Bonus for sustained speed
@@ -1141,16 +1252,19 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             step_rate_bonus = 0.0
             if hasattr(self, 'steps_taken') and len(self.velocity_history) > 100:
                 time_elapsed = self.data.time
-                if time_elapsed > 1.0:  # After 1 second
+                if time_elapsed > 2.0:  # After 2 seconds for more stable measurement
                     steps_per_second = self.steps_taken / time_elapsed
                     
-                    # Target: at least 1 step per second
-                    if steps_per_second > 0.8:
-                        step_rate_bonus = 5.0
-                    elif steps_per_second > 0.3:
-                        step_rate_bonus = 0.0
+                    # Optimal: 0.8-1.2 steps per second (natural cadence)
+                    if steps_per_second < 0.5:
+                        step_rate_bonus = -10.0  # Too slow - not stepping enough
+                    elif 0.5 <= steps_per_second <= 1.2:
+                        step_rate_bonus = 10.0   # Good cadence!
+                    elif 1.2 < steps_per_second <= 1.8:
+                        step_rate_bonus = 5.0    # Okay, a bit fast but acceptable
                     else:
-                        step_rate_bonus = -10.0  # Heavy penalty for not stepping
+                        # More than 1.8 steps/sec = tiny rapid steps!
+                        step_rate_bonus = -20.0 * (steps_per_second - 1.8)
             
             walking_reward = (
                 enhanced_forward_reward
