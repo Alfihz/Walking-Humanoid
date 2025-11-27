@@ -594,7 +594,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 # IMPROVED: Stride length reward with penalties for tiny steps
                 if hip_progression < 0.03:
                     # Tiny steps (< 3cm) - PENALTY!
-                    stride_length_reward = -self.tiny_step_penalty_weight
+                    if self.walking_progress < 0.7:
+                        stride_length_reward = -3.0
+                    else:
+                        stride_length_reward = -self.tiny_step_penalty_weight
                 elif hip_progression < self.min_stride_threshold:
                     # Small steps (3-10cm) - minimal reward
                     stride_length_reward = 5.0
@@ -725,7 +728,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             
             # Allow very brief airborne phases (< 3 timesteps), penalize longer
             if self.airborne_duration > 3:
-                contact_pattern_reward = -self.feet_air_time_penalty * (self.airborne_duration - 3)
+                excess = min(self.airborne_duration - 3, 10)  # MAX 10 timesteps!
+                contact_pattern_reward = -5.0 * excess
             else:
                 contact_pattern_reward = -2.0  # Small penalty for being airborne
         elif single_support:
@@ -829,6 +833,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # CRITICAL FIX: Swing foot clearance reward - ONLY during forward movement
         min_clearance_height = self.min_clearance_height  # 0.08m
         clearance_reward = 0.0
+
+        if left_foot_y < -0.05 and right_foot_y > 0.05:
+            # Legs are crossed!
+            gait_reward += -20.0
 
         left_foot_z = self.data.site_xpos[self.left_foot_site_id][2]
         right_foot_z = self.data.site_xpos[self.right_foot_site_id][2]
