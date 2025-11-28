@@ -636,19 +636,30 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             if hip_progression > 0.001:
                 alternation_reward = 5.0
                 
-                # IMPROVED: Stride length reward with penalties for tiny steps
+                # IMPROVED: Stride length reward with curriculum-scaled penalties (FIXED ASYMMETRY)
                 if hip_progression < 0.03:
-                    # Tiny steps (< 3cm) - PENALTY!
-                    stride_length_reward = -self.tiny_step_penalty_weight
+                    # Tiny steps - scale penalty by curriculum (gentler while learning)
+                    if self.walking_progress < 0.7:
+                        stride_length_reward = -3.0  # Lighter penalty during learning
+                    else:
+                        stride_length_reward = -self.tiny_step_penalty_weight  # Full penalty when mature
+                        
+                elif hip_progression < 0.05:
+                    # 3-5cm steps - small but acceptable during learning
+                    stride_length_reward = 2.0
+                    
                 elif hip_progression < self.min_stride_threshold:
-                    # Small steps (3-10cm) - minimal reward
+                    # Small steps (5-10cm) - minimal reward
                     stride_length_reward = 5.0
+                    
                 elif hip_progression < self.optimal_stride_min:
                     # Medium steps (10-20cm) - moderate reward
                     stride_length_reward = 10.0 + (hip_progression - self.min_stride_threshold) * 50
+                    
                 elif hip_progression <= self.optimal_stride_max:
                     # Optimal strides (20-40cm) - maximum reward
                     stride_length_reward = 30.0
+                    
                 else:
                     # Too long (>40cm) - slight penalty for overstriding
                     stride_length_reward = 20.0 - (hip_progression - self.optimal_stride_max) * 30
@@ -830,13 +841,30 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             gait_reward -= 1.0
             info['gait_reward/narrow_stance_penalty'] = -1.0
 
+        # ============================================================
+        # FIX #2: Improved leg crossing detection (CRITICAL for V18/V19 stuck issues)
+        # ============================================================
+        # In normal stance, left foot should be on left side (positive Y)
+        # and right foot on right side (negative Y)
+        legs_crossed = False
+        
+        if left_foot_y < -0.05 and right_foot_y > 0.05:
+            # Legs are clearly reversed (crossed)
+            legs_crossed = True
+        elif abs(left_foot_y - right_foot_y) < 0.05:
+            # Feet too close together (also problematic)
+            legs_crossed = True
+        
+        if legs_crossed:
+            leg_crossing_penalty = -20.0
+            gait_reward += leg_crossing_penalty
+            info['gait_reward/leg_crossing_penalty'] = leg_crossing_penalty
+        else:
+            info['gait_reward/leg_crossing_penalty'] = 0.0
+
         # CRITICAL FIX: Swing foot clearance reward - ONLY during forward movement
         min_clearance_height = self.min_clearance_height  # 0.08m
         clearance_reward = 0.0
-
-        if left_foot_y < -0.05 and right_foot_y > 0.05:
-            # Legs are crossed!
-            gait_reward += -20.0
 
         left_foot_z = self.data.site_xpos[self.left_foot_site_id][2]
         right_foot_z = self.data.site_xpos[self.right_foot_site_id][2]
