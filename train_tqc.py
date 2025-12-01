@@ -39,26 +39,26 @@ NUM_ENVS = 24  # Increased from 8 to 24 for better sample efficiency
 
 # Metrics to log
 INFO_KEYWORDS = (
-    'base_reward/healthy', 'base_reward/ctrl_cost', 'base_reward/contact_cost',
-    'base_reward/gait_total', 'base_reward/total_reward',
-    'gait_reward/contact_pattern_rew', 'gait_reward/clearance_rew', 'gait_reward/com_smoothness_pen', 
-    'gait_reward/orientation_pen', 'gait_reward/alternation_reward', 'gait_reward/step_frequency_reward', 'gait_reward/stride_length_reward',
-    'env_metrics/left_contact', 'env_metrics/right_contact', 'env_metrics/no_contact', 
-    'env_metrics/both_contact', 'env_metrics/single_support', 'env_metrics/steps_taken',
-    'env_metrics/forward_velocity', 'env_metrics/x_position', 'env_metrics/y_position', 'env_metrics/z_position',
-    'env_metrics/left_foot_height', 'env_metrics/right_foot_height',
-    'curriculum/walking_progress', 'curriculum/alpha_standing', 'curriculum/alpha_walking', 
-    'curriculum/standing_rew', 'curriculum/walking_rew',
-    'curriculum/progressive_forward_weight', 'curriculum/gait_penalty_scale', 'curriculum/ultra_simple_mode',
-    'standing_phase/balance_reward', 'standing_phase/height_reward', 'standing_phase/velocity_penalty', 
-    'standing_phase/torso_upright',
-    'walking_phase/enhanced_forward_reward', 'walking_phase/scaled_gait_reward', 'walking_phase/velocity_tracking', 'walking_phase/sustained_speed_bonus',
-    'ultra_simple/balance_reward', 'ultra_simple/upright_reward', 'ultra_simple/neutral_pose_penalty',
-    'joint_constraints/total_penalty', 'joint_constraints/shoulder1_penalty', 'joint_constraints/shoulder2_penalty', 'joint_constraints/elbow_penalty',
-    'joint_constraints/ankle_y_penalty', 'joint_constraints/ankle_x_penalty', 'joint_constraints/shoulder1_right', 'joint_constraints/shoulder1_left',
-    'joint_constraints/shoulder2_right', 'joint_constraints/shoulder2_left', 'joint_constraints/elbow_right', 'joint_constraints/elbow_left',
-    'joint_constraints/ankle_y_right', 'joint_constraints/ankle_y_left', 'joint_constraints/ankle_x_right', 'joint_constraints/ankle_x_left',
-    'joint_constraints/abdomen_penalty',
+    # Core rewards
+    'rewards/total', 'rewards/healthy', 'rewards/ctrl_cost',
+    'rewards/forward_base', 'rewards/velocity_shaping',
+    'rewards/step', 'rewards/stride', 
+    'rewards/ground_contact', 'rewards/airborne_penalty',
+    'rewards/upright', 'rewards/lateral_penalty',
+    'rewards/balance',  # Phase 1 only
+    'rewards/standing_blend', 'rewards/walking_blend',
+    
+    # Environment metrics
+    'env/forward_velocity', 'env/x_position', 'env/y_position', 'env/z_position',
+    'env/steps_taken', 'env/left_contact', 'env/right_contact',
+    'env/both_contact', 'env/no_contact',
+    'env/left_foot_height', 'env/right_foot_height',
+    
+    # Gait metrics
+    'gait/stride_length', 'gait/airborne_ratio',
+    
+    # Curriculum
+    'curriculum/walking_progress', 'phase',
 )
 
 
@@ -135,43 +135,45 @@ class CurriculumProgressCallback(BaseCallback):
     def _on_step(self) -> bool:
         t = self.num_timesteps
 
-        # Phase 1: Pure standing
+        # Phase 1: Pure standing (progress 0.0)
         if t < self.start_timestep:
             if self._phase != 1:
                 self._phase = 1
                 if self.verbose:
-                    print(f"\n[Curriculum] Phase 1: Pure standing (0-20%)")
+                    print(f"\n[Curriculum] Phase 1: Ultra-simple balance (0-20%)")
                 self._set_phase_all_envs("standing", progress=0.0)
             self.logger.record("curriculum/phase", 1)
             self.logger.record("curriculum/progress", 0.0)
             return True
 
-        # Phase 2: Transition
+        # Phase 2: Transition (progress 0.3 -> 1.0)
         if self.start_timestep <= t < self.end_timestep:
             if self._phase != 2:
                 self._phase = 2
                 if self.verbose:
-                    print(f"\n[Curriculum] Phase 2: Transition starting (20-60%)")
+                    print(f"\n[Curriculum] Phase 2: Transition to walking (20-60%)")
             
-            progress = (t - self.start_timestep) / (self.end_timestep - self.start_timestep)
-            progress = min(1.0, max(0.0, progress))
+            # Map timestep progress to walking_progress 0.3 -> 1.0
+            timestep_progress = (t - self.start_timestep) / (self.end_timestep - self.start_timestep)
+            walking_progress = 0.3 + (0.7 * timestep_progress)
+            walking_progress = min(1.0, max(0.3, walking_progress))
             
             # Only update if progress changed significantly
-            if abs(progress - self._last_progress) > 0.01:
-                self._set_phase_all_envs("walking", progress=progress)
-                self._last_progress = progress
-                if self.verbose and int(progress * 100) % 10 == 0:
-                    print(f"[Curriculum] Transition progress: {progress:.1%}")
+            if abs(walking_progress - self._last_progress) > 0.01:
+                self._set_phase_all_envs("walking", progress=walking_progress)
+                self._last_progress = walking_progress
+                if self.verbose and int(timestep_progress * 100) % 10 == 0:
+                    print(f"[Curriculum] Walking progress: {walking_progress:.2f}")
             
             self.logger.record("curriculum/phase", 2)
-            self.logger.record("curriculum/progress", float(progress))
+            self.logger.record("curriculum/progress", float(walking_progress))
             return True
 
-        # Phase 3: Pure walking
+        # Phase 3: Pure walking (progress 1.0)
         if self._phase != 3:
             self._phase = 3
             if self.verbose:
-                print(f"\n[Curriculum] Phase 3: Pure walking (60-100%)")
+                print(f"\n[Curriculum] Phase 3: Full walking mode (60-100%)")
             self._set_phase_all_envs("walking", progress=1.0)
         
         self.logger.record("curriculum/phase", 3)
@@ -192,52 +194,35 @@ class CustomMetricsCallback(BaseCallback):
             for info in self.locals["infos"]:
                 if info:
                     for key, value in info.items():
-                        if isinstance(value, (int, float)):
-                            self.logger.record(f"{key}", value)
-                    
-                    if "episode" in info:
-                        ep_rew = info["episode"]["r"]
-                        self.episode_rewards.append(ep_rew)
-                        self.episode_lengths.append(info["episode"]["l"])
-                        
-                        if ep_rew > self.best_reward:
-                            self.best_reward = ep_rew
-                            if self.verbose:
-                                print(f"New best episode reward: {ep_rew:.2f}")
-                        
-                        if len(self.episode_rewards) > 100:
-                            self.episode_rewards.pop(0)
-                            self.episode_lengths.pop(0)
-                        
-                        if len(self.episode_rewards) >= 10:
-                            self.logger.record("rollout/ep_rew_mean_10", np.mean(self.episode_rewards[-10:]))
-                            self.logger.record("rollout/ep_len_mean_10", np.mean(self.episode_lengths[-10:]))
-                            self.logger.record("rollout/best_reward", self.best_reward)
+                        if isinstance(value, (int, float, np.integer, np.floating)):
+                            self.logger.record(f"custom/{key}", value)
         return True
 
 
 # ============================================================================
-# Main Training Script
+# Main Training
 # ============================================================================
 if __name__ == "__main__":
-    # Check GPU
-    if not torch.cuda.is_available():
-        print("⚠️  WARNING: CUDA not available! Training will be slow.")
-        NUM_ENVS = 4  # Reduce for CPU
-    else:
+    print("=" * 70)
+    print("TQC HUMANOID WALKER - V21 Clean Environment")
+    print("=" * 70)
+    
+    # GPU check
+    if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         print(f"🎮 GPU Detected: {gpu_name}")
         
         # Adjust environments based on GPU
         if "5070" in gpu_name or "4090" in gpu_name or "4080" in gpu_name:
-            NUM_ENVS = 32  # High-end GPU
-            print(f"💪 Using {NUM_ENVS} parallel environments for maximum performance")
+            NUM_ENVS = 32
         elif "4070" in gpu_name or "3090" in gpu_name or "3080" in gpu_name:
-            NUM_ENVS = 24  # Mid-high GPU
-            print(f"🚀 Using {NUM_ENVS} parallel environments")
+            NUM_ENVS = 24
         else:
-            NUM_ENVS = 16  # Default for other GPUs
-            print(f"📊 Using {NUM_ENVS} parallel environments")
+            NUM_ENVS = 16
+        print(f"📊 Using {NUM_ENVS} parallel environments")
+    else:
+        print("⚠️ No GPU detected, using CPU")
+        NUM_ENVS = 8
 
     # Verify XML file
     SCRIPT_DIR = os.path.dirname(__file__)
@@ -299,25 +284,24 @@ if __name__ == "__main__":
         )
         print(f"📂 Model loaded from {LOAD_MODEL_PATH}")
     else:
-        # Adjusted hyperparameters for more environments
         model = TQC(
             "MlpPolicy",
             vec_env,
             verbose=1,
             tensorboard_log=TENSORBOARD_LOG_DIR,
             device=device,
-            buffer_size=1_000_000,  # Larger buffer for more samples
+            buffer_size=1_000_000,
             learning_rate=3e-4,
-            batch_size=1024,  # Larger batch size for GPU
+            batch_size=1024,
             learning_starts=25000,
             gamma=0.98,
             tau=0.02,
             ent_coef='auto',
-            gradient_steps=1,  # More gradient steps with larger batch
+            gradient_steps=1,
             train_freq=(1, "step"),
             action_noise=action_noise,
             policy_kwargs=dict(
-                net_arch=[512, 400, 300],  # Deeper network for complex task
+                net_arch=[512, 400, 300],
                 activation_fn=torch.nn.ReLU,
                 n_critics=2,
             )
@@ -356,9 +340,9 @@ if __name__ == "__main__":
     print(f"⏰ Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"🎯 Total Timesteps: {TOTAL_TIMESTEPS:,}")
     print(f"🏋️  Training Phases:")
-    print(f"   Phase 1 (Standing): 0 - {STANDING_PHASE_TIMESTEPS:,} steps (20%)")
+    print(f"   Phase 1 (Balance):    0 - {STANDING_PHASE_TIMESTEPS:,} steps (20%)")
     print(f"   Phase 2 (Transition): {STANDING_PHASE_TIMESTEPS:,} - {CURRICULUM_END_TIMESTEPS:,} steps")
-    print(f"   Phase 3 (Walking): {CURRICULUM_END_TIMESTEPS:,} - {TOTAL_TIMESTEPS:,} steps")
+    print(f"   Phase 3 (Walking):    {CURRICULUM_END_TIMESTEPS:,} - {TOTAL_TIMESTEPS:,} steps")
     print(f"💾 Checkpoints every: {SAVE_FREQ:,} steps")
     print(f"🖥️  Parallel Environments: {NUM_ENVS}")
     print(f"📈 TensorBoard: tensorboard --logdir {TENSORBOARD_LOG_DIR}")
@@ -367,7 +351,7 @@ if __name__ == "__main__":
     try:
         model.learn(
             total_timesteps=TOTAL_TIMESTEPS,
-            log_interval=50,  # More frequent logging with more envs
+            log_interval=50,
             progress_bar=True,
             callback=callback_list,
             reset_num_timesteps=(LOAD_MODEL_PATH is None)
@@ -411,11 +395,8 @@ if __name__ == "__main__":
             try:
                 shutil.make_archive(zip_path, 'zip', monitors_dir)
                 print(f"✅ Monitors zipped: {zip_path}.zip")
-                print(f"   ({len(os.listdir(monitors_dir))} CSV files included)")
             except Exception as e:
                 print(f"⚠️  Warning: Failed to zip monitors folder: {e}")
-        else:
-            print("⚠️  No monitors folder found to zip")
         
         vec_env.close()
         print("👋 Done!")
