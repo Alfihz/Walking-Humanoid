@@ -14,7 +14,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.noise import NormalActionNoise
-from HumanoidWalkEnv import HumanoidWalkEnv  # Use the fixed version!
+from HumanoidWalkEnv import HumanoidWalkEnv
 
 
 # ============================================================================
@@ -37,28 +37,84 @@ AUTO_INCREMENT_DIRS = True
 # RTX 5070 Ti can handle more environments!
 NUM_ENVS = 24  # Increased from 8 to 24 for better sample efficiency
 
-# Metrics to log
+# ============================================================================
+# INFO_KEYWORDS - MUST MATCH V17's METRIC NAMES EXACTLY
+# ============================================================================
 INFO_KEYWORDS = (
-    # Core rewards
-    'rewards/total', 'rewards/healthy', 'rewards/ctrl_cost',
-    'rewards/forward_base', 'rewards/velocity_shaping',
-    'rewards/step', 'rewards/stride', 
-    'rewards/ground_contact', 'rewards/airborne_penalty',
-    'rewards/upright', 'rewards/lateral_penalty',
-    'rewards/balance',  # Phase 1 only
-    'rewards/standing_blend', 'rewards/walking_blend',
+    # Base rewards
+    'base_reward/healthy',
+    'base_reward/ctrl_cost',
+    'base_reward/contact_cost',
+    'base_reward/gait_total',
+    'base_reward/total_reward',
     
     # Environment metrics
-    'env/forward_velocity', 'env/x_position', 'env/y_position', 'env/z_position',
-    'env/steps_taken', 'env/left_contact', 'env/right_contact',
-    'env/both_contact', 'env/no_contact',
-    'env/left_foot_height', 'env/right_foot_height',
+    'env_metrics/forward_velocity',
+    'env_metrics/x_position',
+    'env_metrics/y_position',
+    'env_metrics/z_position',
+    'env_metrics/steps_taken',
+    'env_metrics/left_contact',
+    'env_metrics/right_contact',
+    'env_metrics/no_contact',
+    'env_metrics/both_contact',
+    'env_metrics/single_support',
+    'env_metrics/left_foot_height',
+    'env_metrics/right_foot_height',
     
-    # Gait metrics
-    'gait/stride_length', 'gait/airborne_ratio',
+    # Curriculum metrics
+    'curriculum/walking_progress',
+    'curriculum/alpha_standing',
+    'curriculum/alpha_walking',
+    'curriculum/standing_rew',
+    'curriculum/walking_rew',
+    'curriculum/progressive_forward_weight',
+    'curriculum/gait_penalty_scale',
+    'curriculum/ultra_simple_mode',
     
-    # Curriculum
-    'curriculum/walking_progress', 'phase',
+    # Standing phase metrics
+    'standing_phase/balance_reward',
+    'standing_phase/height_reward',
+    'standing_phase/velocity_penalty',
+    'standing_phase/torso_upright',
+    
+    # Walking phase metrics
+    'walking_phase/enhanced_forward_reward',
+    'walking_phase/scaled_gait_reward',
+    'walking_phase/velocity_tracking',
+    'walking_phase/sustained_speed_bonus',
+    
+    # Ultra simple metrics
+    'ultra_simple/balance_reward',
+    'ultra_simple/upright_reward',
+    'ultra_simple/neutral_pose_penalty',
+    
+    # Joint constraints
+    'joint_constraints/total_penalty',
+    'joint_constraints/shoulder1_penalty',
+    'joint_constraints/shoulder2_penalty',
+    'joint_constraints/elbow_penalty',
+    'joint_constraints/ankle_y_penalty',
+    'joint_constraints/ankle_x_penalty',
+    'joint_constraints/abdomen_penalty',
+    'joint_constraints/progress_scale',
+    
+    # Gait rewards
+    'gait_reward/alternation_reward',
+    'gait_reward/step_frequency_reward',
+    'gait_reward/stride_length_reward',
+    'gait_reward/static_standing_penalty',
+    'gait_reward/contact_pattern_rew',
+    'gait_reward/clearance_rew',
+    'gait_reward/com_smoothness_pen',
+    'gait_reward/orientation_pen',
+    'gait_reward/torso_rotation_pen',
+    'gait_reward/foot_slide_pen',
+    
+    # Arm swing
+    'arm_swing/movement_reward',
+    'arm_swing/coordination_reward',
+    'arm_swing/total_reward',
 )
 
 
@@ -195,7 +251,7 @@ class CustomMetricsCallback(BaseCallback):
                 if info:
                     for key, value in info.items():
                         if isinstance(value, (int, float, np.integer, np.floating)):
-                            self.logger.record(f"custom/{key}", value)
+                            self.logger.record(f"{key}", value)
         return True
 
 
