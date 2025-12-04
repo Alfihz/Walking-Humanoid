@@ -1,0 +1,8 @@
+1. Just healthy and forward rewards
+2. Increase reward components
+3. Added penalty components
+4. Implemented Curriculum learning but without walking phase
+5. Gave walking phase time after curriculum learning
+6. Prioritized reward and penalty components.
+7. Too many components. Reduced them.
+8. Instead of penalties, implementing gaussian reward components
