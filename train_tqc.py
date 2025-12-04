@@ -260,7 +260,7 @@ class CustomMetricsCallback(BaseCallback):
 # ============================================================================
 if __name__ == "__main__":
     print("=" * 70)
-    print("TQC HUMANOID WALKER - V21 Clean Environment")
+    print("TQC HUMANOID WALKER")
     print("=" * 70)
     
     # GPU check

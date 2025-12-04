@@ -1,36 +1,3 @@
-"""
-HumanoidWalkEnv V24 - ALL GAUSSIAN REWARDS
-==========================================
-Every reward component uses a Gaussian distribution peaked at the optimal value.
-NO PENALTIES - only positive rewards that guide toward optimal behavior.
-
-Philosophy:
-- Don't punish bad behavior → Reward optimal behavior
-- Robot learns "where's the sweet spot?" not "what should I avoid?"
-
-Gaussian Formula: reward = weight * exp(-(x - target)² / (2 * sigma²))
-- x = current value
-- target = optimal value (peak of Gaussian)
-- sigma = tolerance (how strict - smaller = stricter)
-- weight = importance of this component
-
-REWARD COMPONENTS:
-==================
-TIER 1 - Survival (Always Active):
-  - Height:     peak at 1.4m
-  - Upright:    peak at quat_w = 1.0
-  - Alive:      constant bonus
-
-TIER 2 - Velocity (Always Active):
-  - Speed:      peak at 0.5 m/s
-  
-TIER 3 - Gait Quality (When Walking):
-  - Pitch:      peak at 0 (no lean)
-  - Arm Pos:    peak at 0 (arms at sides)
-  - Airborne:   peak at 20% (walking, not running)
-  - Stride:     peak at 0.4m
-  - Step Bonus: discrete reward for alternating steps
-"""
 
 from gymnasium import spaces
 from gymnasium.envs.mujoco import MujocoEnv
@@ -41,24 +8,12 @@ import os
 DEFAULT_XML_PATH = os.path.join(os.path.dirname(__file__), 'assets', 'humanoid_180_75.xml')
 
 
-def gaussian_reward(x, target, sigma, weight):
-    """
-    Gaussian reward function peaked at target.
-    
-    Args:
-        x: current value
-        target: optimal value (center of Gaussian)
-        sigma: standard deviation (smaller = stricter)
-        weight: maximum reward when x == target
-    
-    Returns:
-        reward in range [0, weight], maximum when x == target
-    """
-    return weight * np.exp(-((x - target) ** 2) / (2 * sigma ** 2))
+def gaussian(x, mu, sigma):
+    """Gaussian function peaked at mu with width sigma."""
+    return np.exp(-((x - mu) ** 2) / (2 * sigma ** 2))
 
 
 class HumanoidWalkEnv(MujocoEnv, EzPickle):
-    """V24 - All Gaussian rewards humanoid walking environment."""
     
     metadata = {
         "render_modes": ["human", "rgb_array", "depth_array"],
@@ -90,35 +45,50 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
 
         self.training_phase = training_phase
         self.walking_progress = 0.0
-        print(f"[V24-Gaussian] Initialized in '{training_phase}' phase")
+        print(f"Initialized in '{training_phase}' phase")
         
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip, 
                          training_phase=training_phase, **kwargs)
 
         # ================================================================
-        # GAUSSIAN REWARD PARAMETERS
-        # Format: (target, sigma, weight)
+        # REWARD PARAMETERS
         # ================================================================
         
-        # TIER 1: SURVIVAL
-        self.height_params = (1.4, 0.15, 8.0)      # Peak at 1.4m, ±15cm tolerance
-        self.upright_params = (1.0, 0.1, 5.0)      # Peak at quat_w=1.0
-        self.alive_reward = 3.0                     # Constant survival bonus
+        # CONSTANT: Survival rewards
+        self.alive_bonus = 2.0              # Constant for staying alive
+        self.target_height = 1.4
         
-        # TIER 2: VELOCITY
-        self.velocity_params = (0.5, 0.2, 10.0)    # Peak at 0.5 m/s, ±0.2 tolerance
+        # LINEAR + GAUSSIAN: Forward velocity (the key innovation)
+        self.linear_velocity_weight = 1.5   # Push to move
+        self.gaussian_velocity_weight = 8.0 # Pull to target
+        self.target_velocity = 0.5          # Target: 0.5 m/s
+        self.velocity_sigma = 0.15          # Tight targeting
         
-        # TIER 3: GAIT QUALITY
-        self.pitch_params = (0.0, 0.15, 4.0)       # Peak at 0 (upright), ±0.15 rad
-        self.arm_position_params = (0.0, 0.4, 3.0) # Peak at 0 (arms down), ±0.4 rad
-        self.airborne_params = (0.20, 0.15, 3.0)   # Peak at 20% airborne, ±15%
-        self.stride_params = (0.40, 0.15, 4.0)     # Peak at 40cm stride, ±15cm
-        self.lateral_params = (0.0, 0.2, 2.0)      # Peak at 0 drift, ±20cm
+        # DISCRETE: Step bonus
+        self.step_bonus = 12.0              # Per alternating step
         
-        # TIER 3: DISCRETE STEP REWARD (not Gaussian - binary event)
-        self.step_reward = 12.0                     # Bonus per alternating step
+        # GAUSSIAN: Optimal gait values
+        self.stride_target = 0.40           # 40cm optimal stride
+        self.stride_sigma = 0.15
+        self.stride_weight = 4.0
         
-        # Small control cost (keep actions smooth)
+        self.airborne_target = 0.20         # 20% optimal airborne
+        self.airborne_sigma = 0.12
+        self.airborne_weight = 3.0
+        
+        # SOFT PENALTIES: Discourage extremes (capped)
+        self.arm_penalty_weight = 2.0       # Arms too high
+        self.arm_threshold = 0.3            # rad - above this = penalty
+        
+        self.pitch_penalty_weight = 3.0     # Leaning too much
+        self.pitch_threshold = 0.2          # rad (~11°)
+        
+        self.lateral_penalty_weight = 2.0   # Drifting sideways
+        self.lateral_threshold = 0.3        # meters
+        
+        self.max_penalty = 3.0              # Cap all penalties
+        
+        # Control cost
         self.ctrl_cost_weight = 0.001
         
         # Joint indices
@@ -171,7 +141,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         noise_low, noise_high = -0.01, 0.01
         qpos = self.init_qpos + self.np_random.uniform(low=noise_low, high=noise_high, size=self.model.nq)
         qvel = self.init_qvel + self.np_random.uniform(low=noise_low, high=noise_high, size=self.model.nv)
-        qpos[2] = self.height_params[0]  # Start at target height
+        qpos[2] = self.target_height
         self.set_state(qpos, qvel)
         
         self.last_left_contact = False
@@ -197,8 +167,16 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                         return True
         return False
 
+    def _soft_penalty(self, value, threshold, weight):
+        """Soft penalty that activates beyond threshold, capped at max_penalty."""
+        if abs(value) > threshold:
+            excess = abs(value) - threshold
+            penalty = -weight * (excess ** 2)
+            return max(penalty, -self.max_penalty)
+        return 0.0
+
     def step(self, action):
-        """Execute one timestep with ALL GAUSSIAN rewards."""
+        """Execute one timestep with principled hybrid rewards."""
         
         x_before = self.data.qpos[0]
         y_before = self.data.qpos[1]
@@ -209,7 +187,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         y_after = self.data.qpos[1]
         height_z = self.data.qpos[2]
         
-        # Velocities
+        # Velocity
         forward_velocity = (x_after - x_before) / self.dt
         
         # Track velocity history
@@ -225,7 +203,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         both_contact = left_contact and right_contact
         single_support = (left_contact != right_contact)
         
-        # Track airborne ratio
+        # Track airborne
         self.airborne_history.append(1.0 if no_contact else 0.0)
         if len(self.airborne_history) > self.airborne_history_maxlen:
             self.airborne_history.pop(0)
@@ -233,66 +211,40 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         
         terminated = not self.is_healthy
         
-        # Get torso orientation
+        # Torso orientation
         torso_quat = self.data.xquat[self.torso_id]
         torso_quat_w = torso_quat[0]
         
         # Calculate torso pitch (forward lean)
         torso_pitch = 2.0 * np.arcsin(np.clip(torso_quat[2], -1.0, 1.0))
         
-        # Get arm positions
+        # Arm positions
         qpos = self.data.qpos
         shoulder2_right = qpos[self.shoulder2_right_idx]
         shoulder2_left = qpos[self.shoulder2_left_idx]
-        avg_arm_position = (abs(shoulder2_right) + abs(shoulder2_left)) / 2.0
         
-        # Lateral drift from start
-        lateral_drift = abs(y_after - self.episode_start_y)
-        
-        # ================================================================
-        # TIER 1: SURVIVAL REWARDS (Gaussian)
-        # ================================================================
-        
-        # Height reward - peak at 1.4m
-        height_reward = gaussian_reward(height_z, *self.height_params)
-        
-        # Upright reward - peak at quat_w = 1.0
-        upright_reward = gaussian_reward(torso_quat_w, *self.upright_params)
-        
-        # Alive bonus - constant while healthy
-        alive_reward = self.alive_reward if not terminated else 0.0
-        
-        tier1_total = height_reward + upright_reward + alive_reward
+        # Lateral drift
+        lateral_drift = y_after - self.episode_start_y
         
         # ================================================================
-        # TIER 2: VELOCITY REWARD (Gaussian)
+        # CONSTANT: Survival
         # ================================================================
-        
-        # Velocity reward - peak at 0.5 m/s
-        velocity_reward = gaussian_reward(avg_velocity, *self.velocity_params)
-        
-        tier2_total = velocity_reward
+        alive_reward = self.alive_bonus if not terminated else 0.0
         
         # ================================================================
-        # TIER 3: GAIT QUALITY REWARDS (Gaussian + Step Bonus)
+        # LINEAR + GAUSSIAN: Forward velocity (key innovation)
         # ================================================================
+        # Linear push: encourages any forward movement
+        linear_push = self.linear_velocity_weight * max(0, forward_velocity)
         
-        # Scale gait rewards by curriculum progress
-        gait_scale = 0.3 + 0.7 * self.walking_progress  # 0.3 to 1.0
+        # Gaussian pull: attracts to target velocity
+        gaussian_pull = self.gaussian_velocity_weight * gaussian(avg_velocity, self.target_velocity, self.velocity_sigma)
         
-        # Pitch reward - peak at 0 (upright torso)
-        pitch_reward = gaussian_reward(torso_pitch, *self.pitch_params) * gait_scale
+        velocity_reward = linear_push + gaussian_pull
         
-        # Arm position reward - peak at 0 (arms at sides)
-        arm_reward = gaussian_reward(avg_arm_position, *self.arm_position_params) * gait_scale
-        
-        # Airborne ratio reward - peak at 20% (walking gait)
-        airborne_reward = gaussian_reward(airborne_ratio, *self.airborne_params) * gait_scale
-        
-        # Lateral position reward - peak at 0 drift (walking straight)
-        lateral_reward = gaussian_reward(lateral_drift, *self.lateral_params) * gait_scale
-        
-        # Step detection and stride reward
+        # ================================================================
+        # DISCRETE: Step bonus
+        # ================================================================
         step_bonus = 0.0
         stride_reward = 0.0
         
@@ -306,9 +258,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 stride_length = current_x - self.last_step_x
                 if stride_length > 0.02:  # At least 2cm forward
                     self.steps_taken += 1
-                    step_bonus = self.step_reward
-                    # Stride length reward - peak at 40cm
-                    stride_reward = gaussian_reward(stride_length, *self.stride_params)
+                    step_bonus = self.step_bonus
+                    # GAUSSIAN: Stride length reward
+                    stride_reward = self.stride_weight * gaussian(stride_length, self.stride_target, self.stride_sigma)
                 self.last_step_x = current_x
                 self.last_swing_foot = 'left'
             
@@ -317,8 +269,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 stride_length = current_x - self.last_step_x
                 if stride_length > 0.02:
                     self.steps_taken += 1
-                    step_bonus = self.step_reward
-                    stride_reward = gaussian_reward(stride_length, *self.stride_params)
+                    step_bonus = self.step_bonus
+                    stride_reward = self.stride_weight * gaussian(stride_length, self.stride_target, self.stride_sigma)
                 self.last_step_x = current_x
                 self.last_swing_foot = 'right'
             
@@ -330,24 +282,52 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 self.last_swing_foot = 'right'
                 self.last_step_x = current_x
         
-        tier3_total = pitch_reward + arm_reward + airborne_reward + lateral_reward + step_bonus + stride_reward
+        # ================================================================
+        # GAUSSIAN: Airborne ratio (optimal at 20%)
+        # ================================================================
+        airborne_reward = self.airborne_weight * gaussian(airborne_ratio, self.airborne_target, self.airborne_sigma)
         
         # ================================================================
-        # SMALL CONTROL COST (only non-Gaussian component)
+        # SOFT PENALTIES: Discourage extremes
         # ================================================================
+        
+        # Arm penalty - raised arms
+        arm_penalty = 0.0
+        if shoulder2_right > self.arm_threshold:
+            arm_penalty += self._soft_penalty(shoulder2_right, self.arm_threshold, self.arm_penalty_weight)
+        if shoulder2_left > self.arm_threshold:
+            arm_penalty += self._soft_penalty(shoulder2_left, self.arm_threshold, self.arm_penalty_weight)
+        
+        # Pitch penalty - leaning forward/backward
+        pitch_penalty = self._soft_penalty(torso_pitch, self.pitch_threshold, self.pitch_penalty_weight)
+        
+        # Lateral penalty - drifting sideways
+        lateral_penalty = self._soft_penalty(lateral_drift, self.lateral_threshold, self.lateral_penalty_weight)
+        
+        # Control cost
         ctrl_cost = -self.ctrl_cost_weight * np.sum(np.square(action))
+        
+        total_penalties = arm_penalty + pitch_penalty + lateral_penalty + ctrl_cost
         
         # ================================================================
         # TOTAL REWARD
         # ================================================================
         
+        # Scale gait components by curriculum
+        gait_scale = 0.3 + 0.7 * self.walking_progress
+        
         if self.training_phase == "standing" and self.walking_progress < 0.3:
-            # Ultra-simple: just survival rewards
-            total_reward = tier1_total + ctrl_cost
+            total_reward = alive_reward + ctrl_cost
             phase_name = "ultra_simple"
         else:
-            # Full walking: all tiers
-            total_reward = tier1_total + tier2_total + tier3_total + ctrl_cost
+            total_reward = (
+                alive_reward +
+                velocity_reward +
+                step_bonus +
+                stride_reward * gait_scale +
+                airborne_reward * gait_scale +
+                total_penalties
+            )
             phase_name = "walking"
         
         # Update contact tracking
@@ -355,7 +335,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.last_right_contact = right_contact
         
         # ================================================================
-        # METRICS (compatible with previous versions)
+        # METRICS
         # ================================================================
         
         left_foot_z = self.data.site_xpos[self.left_foot_site_id][2]
@@ -366,7 +346,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'base_reward/healthy': alive_reward,
             'base_reward/ctrl_cost': ctrl_cost,
             'base_reward/contact_cost': 0.0,
-            'base_reward/gait_total': tier3_total,
+            'base_reward/gait_total': step_bonus + stride_reward + airborne_reward,
             'base_reward/total_reward': total_reward,
             
             # Environment metrics
@@ -387,37 +367,37 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'curriculum/walking_progress': self.walking_progress,
             'curriculum/alpha_standing': 1.0 - self.walking_progress,
             'curriculum/alpha_walking': self.walking_progress,
-            'curriculum/standing_rew': tier1_total,
-            'curriculum/walking_rew': tier2_total + tier3_total,
+            'curriculum/standing_rew': alive_reward,
+            'curriculum/walking_rew': velocity_reward + step_bonus,
             'curriculum/progressive_forward_weight': gait_scale,
             'curriculum/gait_penalty_scale': gait_scale,
             'curriculum/ultra_simple_mode': 1.0 if phase_name == "ultra_simple" else 0.0,
             
-            # Tier 1: Survival (Gaussian)
-            'standing_phase/balance_reward': height_reward,
-            'standing_phase/height_reward': height_reward,
-            'standing_phase/velocity_penalty': 0.0,  # No penalties!
-            'standing_phase/torso_upright': upright_reward,
+            # Standing phase
+            'standing_phase/balance_reward': alive_reward,
+            'standing_phase/height_reward': 0.0,
+            'standing_phase/velocity_penalty': 0.0,
+            'standing_phase/torso_upright': torso_quat_w,
             
-            # Tier 2: Velocity (Gaussian)
+            # Walking phase - velocity breakdown
             'walking_phase/enhanced_forward_reward': velocity_reward,
-            'walking_phase/scaled_gait_reward': tier3_total,
-            'walking_phase/velocity_tracking': velocity_reward,
-            'walking_phase/sustained_speed_bonus': 0.0,
+            'walking_phase/scaled_gait_reward': step_bonus + stride_reward,
+            'walking_phase/velocity_tracking': gaussian_pull,
+            'walking_phase/sustained_speed_bonus': linear_push,
             
             # Ultra simple
-            'ultra_simple/balance_reward': height_reward if phase_name == "ultra_simple" else 0.0,
-            'ultra_simple/upright_reward': upright_reward if phase_name == "ultra_simple" else 0.0,
+            'ultra_simple/balance_reward': alive_reward if phase_name == "ultra_simple" else 0.0,
+            'ultra_simple/upright_reward': 0.0,
             'ultra_simple/neutral_pose_penalty': 0.0,
             
-            # Tier 3: Gait Quality (Gaussian) - repurposing old metric names
-            'joint_constraints/total_penalty': 0.0,  # No penalties!
+            # Penalties (now actually penalties, not rewards)
+            'joint_constraints/total_penalty': total_penalties,
             'joint_constraints/shoulder1_penalty': 0.0,
-            'joint_constraints/shoulder2_penalty': arm_reward,  # Now a reward!
+            'joint_constraints/shoulder2_penalty': arm_penalty,
             'joint_constraints/elbow_penalty': 0.0,
-            'joint_constraints/ankle_y_penalty': pitch_reward,  # Torso pitch reward
-            'joint_constraints/ankle_x_penalty': airborne_reward,  # Airborne reward
-            'joint_constraints/abdomen_penalty': lateral_reward,  # Lateral reward
+            'joint_constraints/ankle_y_penalty': pitch_penalty,
+            'joint_constraints/ankle_x_penalty': 0.0,
+            'joint_constraints/abdomen_penalty': lateral_penalty,
             'joint_constraints/progress_scale': gait_scale,
             
             # Gait rewards
@@ -433,9 +413,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'gait_reward/foot_slide_pen': 0.0,
             
             # Arm swing
-            'arm_swing/movement_reward': arm_reward,
+            'arm_swing/movement_reward': 0.0,
             'arm_swing/coordination_reward': 0.0,
-            'arm_swing/total_reward': arm_reward,
+            'arm_swing/total_reward': 0.0,
         }
         
         observation = self._get_obs()
