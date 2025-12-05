@@ -99,6 +99,21 @@ INFO_KEYWORDS = (
     'joint_constraints/abdomen_penalty',
     'joint_constraints/progress_scale',
     
+    # V26: Extra joint detail metrics (from V17)
+    'joint_constraints/shoulder1_right',
+    'joint_constraints/shoulder1_left',
+    'joint_constraints/shoulder2_right',
+    'joint_constraints/shoulder2_left',
+    'joint_constraints/elbow_right',
+    'joint_constraints/elbow_left',
+    'joint_constraints/ankle_y_right',
+    'joint_constraints/ankle_y_left',
+    'joint_constraints/ankle_x_right',
+    'joint_constraints/ankle_x_left',
+    'joint_constraints/abdomen_x',
+    'joint_constraints/abdomen_y',
+    'joint_constraints/abdomen_z',
+    
     # Gait rewards
     'gait_reward/alternation_reward',
     'gait_reward/step_frequency_reward',
@@ -115,6 +130,10 @@ INFO_KEYWORDS = (
     'arm_swing/movement_reward',
     'arm_swing/coordination_reward',
     'arm_swing/total_reward',
+    
+    # V26: Extra arm swing detail metrics (from V17)
+    'arm_swing/shoulder1_right',
+    'arm_swing/shoulder1_left',
 )
 
 
