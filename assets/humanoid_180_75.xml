@@ -106,6 +106,7 @@
       <light name="top" pos="0 0 2" mode="trackcom"/>
       <camera name="back" pos="-3 0 1" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
       <camera name="side" pos="0 -3 1" xyaxes="1 0 0 0 1 2" mode="trackcom"/>
+      <camera name="track" pos="-3.5 0 1.5" xyaxes="0 -1 0 0.5 0 1" mode="trackcom"/>
       <freejoint name="root"/>
       <!-- Torax geom and inertial from original -->
       <geom name="torax" fromto="0 -.12875 0 0 .12875 0" size=".11125"/>
