@@ -11,8 +11,8 @@ from HumanoidWalkEnv import HumanoidWalkEnv
 # ============================================================
 #  EASY CONFIGURATION — Change these before running
 # ============================================================
-VERSION         = 26                                           # Model version number (XX)
-MODEL_FILE      = "tqc_humanoid_walker_final_20000000_steps"  # .zip added automatically by TQC.load()
+VERSION         = 1                                           # Model version number (XX)
+MODEL_FILE      = "tqc_humanoid_walker_final_20000016_steps"  # .zip added automatically by TQC.load()
 VECNORM_FILE    = "tqc_vecnormalize_final.pkl"
 VIDEO_TIMESTEPS = 10000                                         # Total steps to record (also caps eval length when recording)
 # ============================================================

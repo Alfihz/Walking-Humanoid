@@ -310,8 +310,8 @@ if __name__ == "__main__":
         TENSORBOARD_LOG_DIR = f"./tensorboard/tqc_{run_num}"
         os.makedirs(TENSORBOARD_LOG_DIR, exist_ok=True)
     else:
-        MODEL_CHECKPOINT_DIR = "./models/tqc_1"
-        TENSORBOARD_LOG_DIR = "./tensorboard/tqc_1"
+        MODEL_CHECKPOINT_DIR = "./models/tqc_01"
+        TENSORBOARD_LOG_DIR = "./tensorboard/tqc_01"
         os.makedirs(TENSORBOARD_LOG_DIR, exist_ok=True)
         os.makedirs(MODEL_CHECKPOINT_DIR, exist_ok=True)
     
