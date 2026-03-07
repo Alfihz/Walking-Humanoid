@@ -18,8 +18,8 @@ VIDEO_TIMESTEPS = 10000                                         # Total steps to
 # ============================================================
 
 # Derived defaults (don't need to change these)
-_MODEL_PATH   = os.path.join("models", "tqc_humanoid_checkpoints", f"tqc_{VERSION:02d}", MODEL_FILE)
-_VECNORM_PATH = os.path.join("models", "tqc_humanoid_checkpoints", f"tqc_{VERSION:02d}", VECNORM_FILE)
+_MODEL_PATH   = os.path.join("models", f"tqc_{VERSION:02d}", MODEL_FILE)
+_VECNORM_PATH = os.path.join("models", f"tqc_{VERSION:02d}", VECNORM_FILE)
 _RECORD_DIR   = os.path.join("video_simulations", f"TQC{VERSION:02d}")
 
 

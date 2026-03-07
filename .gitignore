@@ -6,3 +6,4 @@ models/
 tensorboard/
 temp.py
 video_simulations/
+gen_1/

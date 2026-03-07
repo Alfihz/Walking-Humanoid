@@ -21,12 +21,12 @@ from HumanoidWalkEnv import HumanoidWalkEnv
 # Configuration - OPTIMIZED FOR RTX 5070 Ti
 # ============================================================================
 XML_FILENAME = "assets/humanoid_180_75.xml"
-SAVE_FREQ = 500_000  
+SAVE_FREQ = 1_000_000  
 TOTAL_TIMESTEPS = 20_000_000
 
 # Curriculum phases
-STANDING_PHASE_TIMESTEPS = int(0.20 * TOTAL_TIMESTEPS)  # 20% standing 
-CURRICULUM_END_TIMESTEPS = int(0.60 * TOTAL_TIMESTEPS)  # 60% total
+STANDING_PHASE_TIMESTEPS = int(0.15 * TOTAL_TIMESTEPS)  # 20% standing 
+CURRICULUM_END_TIMESTEPS = int(0.45 * TOTAL_TIMESTEPS)  # 60% total
 
 # Model loading
 LOAD_MODEL_PATH = None
@@ -34,21 +34,19 @@ LOAD_MODEL_PATH = None
 # Auto-increment run directories
 AUTO_INCREMENT_DIRS = True
 
-# RTX 5070 Ti can handle more environments!
-NUM_ENVS = 24  # Increased from 8 to 24 for better sample efficiency
-
 # ============================================================================
-# INFO_KEYWORDS - MUST MATCH V17's METRIC NAMES EXACTLY
+# INFO_KEYWORDS - MUST MATCH V27 METRIC NAMES EXACTLY
+# Total: 74 metrics across 9 groups
 # ============================================================================
 INFO_KEYWORDS = (
-    # Base rewards
+    # ── Base rewards (5) ─────────────────────────────────────────────────
     'base_reward/healthy',
     'base_reward/ctrl_cost',
     'base_reward/contact_cost',
     'base_reward/gait_total',
     'base_reward/total_reward',
-    
-    # Environment metrics
+
+    # ── Environment metrics (12) ──────────────────────────────────────────
     'env_metrics/forward_velocity',
     'env_metrics/x_position',
     'env_metrics/y_position',
@@ -61,8 +59,8 @@ INFO_KEYWORDS = (
     'env_metrics/single_support',
     'env_metrics/left_foot_height',
     'env_metrics/right_foot_height',
-    
-    # Curriculum metrics
+
+    # ── Curriculum metrics (8) ────────────────────────────────────────────
     'curriculum/walking_progress',
     'curriculum/alpha_standing',
     'curriculum/alpha_walking',
@@ -71,67 +69,65 @@ INFO_KEYWORDS = (
     'curriculum/progressive_forward_weight',
     'curriculum/gait_penalty_scale',
     'curriculum/ultra_simple_mode',
-    
-    # Standing phase metrics
+
+    # ── Standing phase metrics (4) ────────────────────────────────────────
     'standing_phase/balance_reward',
     'standing_phase/height_reward',
     'standing_phase/velocity_penalty',
     'standing_phase/torso_upright',
-    
-    # Walking phase metrics
+
+    # ── Walking phase metrics (4) ─────────────────────────────────────────
     'walking_phase/enhanced_forward_reward',
     'walking_phase/scaled_gait_reward',
     'walking_phase/velocity_tracking',
     'walking_phase/sustained_speed_bonus',
-    
-    # Ultra simple metrics
+
+    # ── Ultra-simple phase metrics (3) ────────────────────────────────────
     'ultra_simple/balance_reward',
     'ultra_simple/upright_reward',
     'ultra_simple/neutral_pose_penalty',
-    
-    # Joint constraints
-    'joint_constraints/total_penalty',
-    'joint_constraints/shoulder1_penalty',
-    'joint_constraints/shoulder2_penalty',
-    'joint_constraints/elbow_penalty',
-    'joint_constraints/ankle_y_penalty',
-    'joint_constraints/ankle_x_penalty',
-    'joint_constraints/abdomen_penalty',
-    'joint_constraints/progress_scale',
-    
-    # V26: Extra joint detail metrics (from V17)
-    'joint_constraints/shoulder1_right',
-    'joint_constraints/shoulder1_left',
-    'joint_constraints/shoulder2_right',
-    'joint_constraints/shoulder2_left',
-    'joint_constraints/elbow_right',
-    'joint_constraints/elbow_left',
-    'joint_constraints/ankle_y_right',
-    'joint_constraints/ankle_y_left',
-    'joint_constraints/ankle_x_right',
-    'joint_constraints/ankle_x_left',
-    'joint_constraints/abdomen_x',
-    'joint_constraints/abdomen_y',
-    'joint_constraints/abdomen_z',
-    
-    # Gait rewards
+
+    # ── Gait rewards (12) ─────────────────────────────────────────────────
     'gait_reward/alternation_reward',
     'gait_reward/step_frequency_reward',
     'gait_reward/stride_length_reward',
     'gait_reward/static_standing_penalty',
     'gait_reward/contact_pattern_rew',
+    'gait_reward/wide_stance_penalty',
+    'gait_reward/narrow_stance_penalty',
     'gait_reward/clearance_rew',
     'gait_reward/com_smoothness_pen',
     'gait_reward/orientation_pen',
     'gait_reward/torso_rotation_pen',
     'gait_reward/foot_slide_pen',
-    
-    # Arm swing
+
+    # ── Joint constraints (21) ────────────────────────────────────────────
+    'joint_constraints/total_penalty',
+    'joint_constraints/progress_scale',
+    'joint_constraints/abdomen_penalty',
+    'joint_constraints/abdomen_x',
+    'joint_constraints/abdomen_y',
+    'joint_constraints/abdomen_z',
+    'joint_constraints/shoulder1_penalty',
+    'joint_constraints/shoulder1_right',
+    'joint_constraints/shoulder1_left',
+    'joint_constraints/shoulder2_penalty',
+    'joint_constraints/shoulder2_right',
+    'joint_constraints/shoulder2_left',
+    'joint_constraints/elbow_penalty',
+    'joint_constraints/elbow_right',
+    'joint_constraints/elbow_left',
+    'joint_constraints/ankle_y_penalty',
+    'joint_constraints/ankle_y_right',
+    'joint_constraints/ankle_y_left',
+    'joint_constraints/ankle_x_penalty',
+    'joint_constraints/ankle_x_right',
+    'joint_constraints/ankle_x_left',
+
+    # ── Arm swing (5) ─────────────────────────────────────────────────────
     'arm_swing/movement_reward',
     'arm_swing/coordination_reward',
     'arm_swing/total_reward',
-    
-    # V26: Extra arm swing detail metrics (from V17)
     'arm_swing/shoulder1_right',
     'arm_swing/shoulder1_left',
 )
@@ -140,7 +136,7 @@ INFO_KEYWORDS = (
 # ============================================================================
 # Helper Functions
 # ============================================================================
-def create_next_run_dir(base_dir="./models/tqc_humanoid_checkpoints"):
+def create_next_run_dir(base_dir="./models/"):
     """Create a new numbered directory"""
     import re
     
@@ -289,11 +285,11 @@ if __name__ == "__main__":
         
         # Adjust environments based on GPU
         if "5070" in gpu_name or "4090" in gpu_name or "4080" in gpu_name:
-            NUM_ENVS = 32
-        elif "4070" in gpu_name or "3090" in gpu_name or "3080" in gpu_name:
             NUM_ENVS = 24
+        elif "4070" in gpu_name or "3090" in gpu_name or "3080" in gpu_name:
+            NUM_ENVS = 12
         else:
-            NUM_ENVS = 16
+            NUM_ENVS = 8
         print(f"📊 Using {NUM_ENVS} parallel environments")
     else:
         print("⚠️ No GPU detected, using CPU")
@@ -311,11 +307,11 @@ if __name__ == "__main__":
     if AUTO_INCREMENT_DIRS:
         MODEL_CHECKPOINT_DIR = create_next_run_dir()
         run_num = os.path.basename(MODEL_CHECKPOINT_DIR).split('_')[1]
-        TENSORBOARD_LOG_DIR = f"./tensorboard/tqc_humanoid_logs/tqc_{run_num}"
+        TENSORBOARD_LOG_DIR = f"./tensorboard/tqc_{run_num}"
         os.makedirs(TENSORBOARD_LOG_DIR, exist_ok=True)
     else:
-        MODEL_CHECKPOINT_DIR = "./models/tqc_humanoid_checkpoints/tqc_1"
-        TENSORBOARD_LOG_DIR = "./tensorboard/tqc_humanoid_logs/tqc_1"
+        MODEL_CHECKPOINT_DIR = "./models/tqc_1"
+        TENSORBOARD_LOG_DIR = "./tensorboard/tqc_1"
         os.makedirs(TENSORBOARD_LOG_DIR, exist_ok=True)
         os.makedirs(MODEL_CHECKPOINT_DIR, exist_ok=True)
     
