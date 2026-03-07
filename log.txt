@@ -1,0 +1,2 @@
+TQC01: Humanoid is still falling. This is caused by the right ankle always twisting and hitting the left foot causing the humanoid to fall.
+    Fix: Apply more constraint on ankles to face forward, but still has a small leeway to tilt left and right.

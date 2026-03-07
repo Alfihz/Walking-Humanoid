@@ -1,21 +1,22 @@
 """
-HumanoidWalkEnv V27 - CLEAN FOUNDATION
-=======================================
-Back-to-basics rewrite with lessons learned baked in from V17-V26.
+HumanoidWalkEnv Gen2-02 - ANKLE ORIENTATION FIX
+================================================
+Based on Gen2-01 (V27) with one targeted fix:
 
-DESIGN PRINCIPLES:
+FIX (Gen2-02):
+- Ankle X (lateral foot twist) constraint completely reworked:
+    * Weight raised from 1.0 → 6.0
+    * Deadband introduced: ±0.05 rad (≈±3°) is penalty-free
+    * Applied AFTER curriculum scaling so always at full strength
+    * Reason: right foot was twisting outward, clipping left leg, causing falls
+
+Gen2-01 DESIGN PRINCIPLES (preserved):
 - Minimal reward components (4-5 core only)
 - Positive rewards drive behaviour; penalties are secondary and always CAPPED
 - All left/right rewards are perfectly SYMMETRIC
 - Forward progress (+X axis) is the PRIMARY mandatory goal
 - Joint constraints are soft guidance, not hard punishment
 - Curriculum: ultra-simple balance → standing → walking
-
-REWARD COMPONENTS (4 core):
-1. Velocity reward    – Linear + Gaussian hybrid targeting 0.5 m/s
-2. Healthy reward     – Alive bonus; episode terminates on fall
-3. Upright reward     – Gaussian on torso quaternion w-component
-4. Step alternation   – Reward proper left/right foot sequence
 
 BAKED-IN LESSONS FROM V17-V26:
 - Forward = +X axis
@@ -26,7 +27,7 @@ BAKED-IN LESSONS FROM V17-V26:
 - Balance reward floor must not be too negative (was -20, now -5)
 - camera_name="track" must exist in XML (not just "back"/"side")
 
-METRICS: Full 72-metric suite preserved from V26 for TensorBoard comparison.
+METRICS: Full 74-metric suite from V27 preserved unchanged.
 """
 
 from gymnasium import spaces
@@ -101,7 +102,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv V27 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-02 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -157,7 +158,12 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.shoulder2_constraint_weight = 1.5
         self.elbow_constraint_weight     = 0.8
         self.ankle_y_constraint_weight   = 1.2
-        self.ankle_x_constraint_weight   = 1.0
+        # V28 FIX: Raised — foot lateral twist causes foot collision and falls.
+        # Enforced at full strength regardless of curriculum phase (see below).
+        self.ankle_x_constraint_weight   = 6.0
+        # Deadband: feet are allowed ±0.05 rad (≈±3°) of lateral tilt.
+        # No penalty inside the deadband; strong quadratic outside it.
+        self.ankle_x_deadband            = 0.05
         self.abdomen_x_constraint_weight = 2.0
         self.abdomen_y_constraint_weight = 1.5
         self.abdomen_z_constraint_weight = 1.8
@@ -365,19 +371,34 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/ankle_y_left']    = float(ayl)
         info['joint_constraints/ankle_y_penalty'] = float(ay_pen)
 
-        # Ankle X (no lateral twist)
+        # Scale by master weight and curriculum progress
+        # NOTE: ankle_x is intentionally excluded from this scaling —
+        # foot orientation must be enforced from step 1, not just in walking phase.
+        scale  = 0.2 + 0.8 * min(1.0, self.walking_progress * 2)
+        total *= self.joint_constraint_weight * scale
+
+        # ── ANKLE X (lateral foot twist) ─────────────────────────────────
+        # Applied AFTER curriculum scaling so it is always at full strength.
+        # Deadband: ±ankle_x_deadband rad is free (natural small tilt allowed).
+        # Outside deadband: strong quadratic penalty on the excess angle only.
         axr = qpos[self.ankle_x_right_idx]
         axl = qpos[self.ankle_x_left_idx]
-        ax_pen = -self.ankle_x_constraint_weight * (axr ** 2 + axl ** 2)
-        total += ax_pen
+        db  = self.ankle_x_deadband  # ±0.05 rad ≈ ±3°
+
+        def _ax_pen(angle):
+            excess = abs(angle) - db
+            if excess > 0:
+                return -self.ankle_x_constraint_weight * (excess ** 2)
+            return 0.0
+
+        axr_pen = _ax_pen(axr)
+        axl_pen = _ax_pen(axl)
+        ax_pen  = axr_pen + axl_pen
+        total  += ax_pen   # added at full weight, no curriculum discount
 
         info['joint_constraints/ankle_x_right']   = float(axr)
         info['joint_constraints/ankle_x_left']    = float(axl)
         info['joint_constraints/ankle_x_penalty'] = float(ax_pen)
-
-        # Scale by master weight and curriculum progress
-        scale  = 0.2 + 0.8 * min(1.0, self.walking_progress * 2)
-        total *= self.joint_constraint_weight * scale
 
         info['joint_constraints/total_penalty']  = float(total)
         info['joint_constraints/progress_scale'] = float(scale)
