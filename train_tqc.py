@@ -153,7 +153,7 @@ def create_next_run_dir(base_dir="./models/"):
             num = int(match.group(1))
             max_num = max(max_num, num)
     
-    new_dir_name = f"tqc_{max_num + 1}"
+    new_dir_name = f"tqc_{max_num + 1:02d}"
     new_dir_path = os.path.join(base_dir, new_dir_name)
     os.makedirs(new_dir_path)
     

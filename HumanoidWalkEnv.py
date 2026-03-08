@@ -1,14 +1,20 @@
 """
-HumanoidWalkEnv Gen2-02 - ANKLE ORIENTATION FIX
-================================================
-Based on Gen2-01 (V27) with one targeted fix:
+HumanoidWalkEnv Gen2-03 - ANKLE DEADBAND RELAXED
+=================================================
+Based on Gen2-02 with one targeted fix:
 
-FIX (Gen2-02):
-- Ankle X (lateral foot twist) constraint completely reworked:
-    * Weight raised from 1.0 → 6.0
-    * Deadband introduced: ±0.05 rad (≈±3°) is penalty-free
-    * Applied AFTER curriculum scaling so always at full strength
-    * Reason: right foot was twisting outward, clipping left leg, causing falls
+FIX (Gen2-03):
+- Ankle X constraint relaxed:
+    * Weight reduced from 6.0 → 3.0
+    * Deadband widened from ±0.05 rad (±3°) → ±0.10 rad (±6°)
+    * Reason: 6.0/±3° was too tight — robot learned to freeze the right
+      foot to avoid penalty and shuffle only the left leg forward.
+      Normal human toe-out is ~7-10°, so ±6° allows natural gait while
+      still preventing the large outward twist seen in Gen2-01.
+
+FIX (Gen2-02 — preserved):
+- Ankle X applied AFTER curriculum scaling (always full strength)
+- Reason: foot twist was causing foot-on-foot collision and falls
 
 Gen2-01 DESIGN PRINCIPLES (preserved):
 - Minimal reward components (4-5 core only)
@@ -27,7 +33,7 @@ BAKED-IN LESSONS FROM V17-V26:
 - Balance reward floor must not be too negative (was -20, now -5)
 - camera_name="track" must exist in XML (not just "back"/"side")
 
-METRICS: Full 74-metric suite from V27 preserved unchanged.
+METRICS: Full 74-metric suite from Gen2-01 preserved unchanged.
 """
 
 from gymnasium import spaces
@@ -102,7 +108,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-02 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-03 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -158,12 +164,14 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.shoulder2_constraint_weight = 1.5
         self.elbow_constraint_weight     = 0.8
         self.ankle_y_constraint_weight   = 1.2
-        # V28 FIX: Raised — foot lateral twist causes foot collision and falls.
-        # Enforced at full strength regardless of curriculum phase (see below).
-        self.ankle_x_constraint_weight   = 6.0
-        # Deadband: feet are allowed ±0.05 rad (≈±3°) of lateral tilt.
-        # No penalty inside the deadband; strong quadratic outside it.
-        self.ankle_x_deadband            = 0.05
+        # Gen2-03 FIX: Reduced weight 6.0→3.0 and widened deadband 0.05→0.10.
+        # 6.0/±3° was too tight — robot froze right foot to avoid penalty and
+        # shuffled only the left leg. Normal human toe-out is ~7-10°, so ±6°
+        # deadband gives natural range while still preventing large twist.
+        self.ankle_x_constraint_weight   = 3.0
+        # Deadband: feet are allowed ±0.10 rad (≈±6°) of lateral tilt.
+        # No penalty inside the deadband; quadratic penalty on excess outside.
+        self.ankle_x_deadband            = 0.10
         self.abdomen_x_constraint_weight = 2.0
         self.abdomen_y_constraint_weight = 1.5
         self.abdomen_z_constraint_weight = 1.8

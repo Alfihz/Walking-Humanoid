@@ -7,3 +7,4 @@ tensorboard/
 temp.py
 video_simulations/
 gen_1/
+export_to_windows.sh

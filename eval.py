@@ -11,7 +11,7 @@ from HumanoidWalkEnv import HumanoidWalkEnv
 # ============================================================
 #  EASY CONFIGURATION — Change these before running
 # ============================================================
-VERSION         = 1                                           # Model version number (XX)
+VERSION         = 2                                           # Model version number (XX)
 MODEL_FILE      = "tqc_humanoid_walker_final_20000016_steps"  # .zip added automatically by TQC.load()
 VECNORM_FILE    = "tqc_vecnormalize_final.pkl"
 VIDEO_TIMESTEPS = 10000                                         # Total steps to record (also caps eval length when recording)
@@ -48,7 +48,7 @@ def next_video_index(record_dir: str, base_name: str) -> int:
     return max(indices, default=0) + 1
 
 
-def save_video(frames: list, path: str, fps: int = 30):
+def save_video(frames: list, path: str, fps: int = 100):
     """Save RGB frames to an mp4 file using imageio."""
     try:
         import imageio
