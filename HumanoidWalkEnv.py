@@ -1,16 +1,22 @@
 """
-HumanoidWalkEnv Gen2-03 - ANKLE DEADBAND RELAXED
+HumanoidWalkEnv Gen2-04 - POSITIONAL LAG PENALTY
 =================================================
-Based on Gen2-02 with one targeted fix:
+Based on Gen2-03 with one targeted fix:
 
-FIX (Gen2-03):
-- Ankle X constraint relaxed:
-    * Weight reduced from 6.0 → 3.0
-    * Deadband widened from ±0.05 rad (±3°) → ±0.10 rad (±6°)
-    * Reason: 6.0/±3° was too tight — robot learned to freeze the right
-      foot to avoid penalty and shuffle only the left leg forward.
-      Normal human toe-out is ~7-10°, so ±6° allows natural gait while
-      still preventing the large outward twist seen in Gen2-01.
+FIX (Gen2-04):
+- Added positional lag penalty to force proper leg alternation:
+    * Tracks how many consecutive steps each foot is stuck behind the other
+    * Tolerance window: 45 steps (0.45s sim time) — covers a natural stride
+    * Penalty: -8.0 per step beyond tolerance, capped at -20 per foot
+    * Only active when forward_velocity > 0.1 m/s (no penalty while standing)
+    * Perfectly symmetric: same logic applied to both left and right foot
+    * New metric emitted: gait_reward/positional_lag_penalty
+    * Reason: robot exploited ankle constraint by freezing right foot and
+      shuffling only left leg forward indefinitely
+
+FIX (Gen2-03 — preserved):
+- Ankle X weight 6.0→3.0, deadband 0.05→0.10 rad (±6°)
+- Reason: ±3° was too tight causing frozen-foot exploitation
 
 FIX (Gen2-02 — preserved):
 - Ankle X applied AFTER curriculum scaling (always full strength)
@@ -33,7 +39,7 @@ BAKED-IN LESSONS FROM V17-V26:
 - Balance reward floor must not be too negative (was -20, now -5)
 - camera_name="track" must exist in XML (not just "back"/"side")
 
-METRICS: Full 74-metric suite from Gen2-01 preserved unchanged.
+METRICS: 75 metrics (74 from Gen2-01 + 1 new: gait_reward/positional_lag_penalty)
 """
 
 from gymnasium import spaces
@@ -108,7 +114,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-03 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-04 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -164,14 +170,12 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.shoulder2_constraint_weight = 1.5
         self.elbow_constraint_weight     = 0.8
         self.ankle_y_constraint_weight   = 1.2
-        # Gen2-03 FIX: Reduced weight 6.0→3.0 and widened deadband 0.05→0.10.
-        # 6.0/±3° was too tight — robot froze right foot to avoid penalty and
-        # shuffled only the left leg. Normal human toe-out is ~7-10°, so ±6°
-        # deadband gives natural range while still preventing large twist.
-        self.ankle_x_constraint_weight   = 3.0
-        # Deadband: feet are allowed ±0.10 rad (≈±6°) of lateral tilt.
-        # No penalty inside the deadband; quadratic penalty on excess outside.
-        self.ankle_x_deadband            = 0.10
+        # V28 FIX: Raised — foot lateral twist causes foot collision and falls.
+        # Enforced at full strength regardless of curriculum phase (see below).
+        self.ankle_x_constraint_weight   = 6.0
+        # Deadband: feet are allowed ±0.05 rad (≈±3°) of lateral tilt.
+        # No penalty inside the deadband; strong quadratic outside it.
+        self.ankle_x_deadband            = 0.05
         self.abdomen_x_constraint_weight = 2.0
         self.abdomen_y_constraint_weight = 1.5
         self.abdomen_z_constraint_weight = 1.8
@@ -215,6 +219,11 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.episode_start_x    = 0.0
         self.episode_start_y    = 0.0
         self.path_deviation_history = []
+
+        # Positional lag tracking — Gen2-04
+        # Counts how many consecutive steps each foot has been stuck behind
+        self.left_foot_lag_steps  = 0
+        self.right_foot_lag_steps = 0
 
     # ------------------------------------------------------------------ #
     #  CURRICULUM CONTROL                                                 #
@@ -277,6 +286,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.path_deviation_history = []
         self.episode_start_x        = self.data.qpos[0]
         self.episode_start_y        = self.data.qpos[1]
+        self.left_foot_lag_steps    = 0
+        self.right_foot_lag_steps   = 0
 
         # Reset any timestep-local counters
         for attr in ('airborne_duration', 'double_support_duration',
@@ -694,6 +705,47 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         fslide *= self.foot_slide_penalty_weight
         gait_reward += fslide
         info['gait_reward/foot_slide_pen'] = float(fslide)
+
+        # ---- Positional lag penalty (Gen2-04) ----
+        # If a foot has been stuck behind the other for too long, penalise it.
+        # Only active when robot is moving forward (avoids penalising standing).
+        # Tolerance: 45 steps = 0.45s sim time. At 0.5 m/s a stride takes
+        # ~0.7s, so the back foot should advance within ~0.35s — 45 steps
+        # gives natural tolerance without allowing permanent single-leg shuffle.
+        LAG_TOLERANCE  = 45    # steps before penalty kicks in
+        LAG_PENALTY    = -8.0  # per step beyond tolerance (capped at -20)
+
+        positional_lag_pen = 0.0
+        if forward_velocity > 0.1:
+            lf_x = self.data.site_xpos[self.left_foot_site_id][0]
+            rf_x = self.data.site_xpos[self.right_foot_site_id][0]
+
+            # Right foot stuck behind left foot
+            if rf_x < lf_x:
+                self.right_foot_lag_steps += 1
+                self.left_foot_lag_steps   = 0
+            # Left foot stuck behind right foot
+            elif lf_x < rf_x:
+                self.left_foot_lag_steps  += 1
+                self.right_foot_lag_steps  = 0
+            else:
+                self.left_foot_lag_steps  = 0
+                self.right_foot_lag_steps = 0
+
+            right_excess = max(0, self.right_foot_lag_steps - LAG_TOLERANCE)
+            left_excess  = max(0, self.left_foot_lag_steps  - LAG_TOLERANCE)
+
+            if right_excess > 0:
+                positional_lag_pen += max(LAG_PENALTY * right_excess, -20.0)
+            if left_excess > 0:
+                positional_lag_pen += max(LAG_PENALTY * left_excess,  -20.0)
+        else:
+            # Not moving — reset counters, don't penalise
+            self.left_foot_lag_steps  = 0
+            self.right_foot_lag_steps = 0
+
+        gait_reward += positional_lag_pen
+        info['gait_reward/positional_lag_penalty'] = float(positional_lag_pen)
 
         # Update last contacts
         self.last_left_contact  = left_contact

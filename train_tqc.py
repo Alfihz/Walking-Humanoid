@@ -25,8 +25,8 @@ SAVE_FREQ = 1_000_000
 TOTAL_TIMESTEPS = 20_000_000
 
 # Curriculum phases
-STANDING_PHASE_TIMESTEPS = int(0.15 * TOTAL_TIMESTEPS)  # 20% standing 
-CURRICULUM_END_TIMESTEPS = int(0.45 * TOTAL_TIMESTEPS)  # 60% total
+STANDING_PHASE_TIMESTEPS = int(0.15 * TOTAL_TIMESTEPS)  # 15% standing 
+CURRICULUM_END_TIMESTEPS = int(0.45 * TOTAL_TIMESTEPS)  # 30% transition, then full walking
 
 # Model loading
 LOAD_MODEL_PATH = None
@@ -87,7 +87,7 @@ INFO_KEYWORDS = (
     'ultra_simple/upright_reward',
     'ultra_simple/neutral_pose_penalty',
 
-    # ── Gait rewards (12) ─────────────────────────────────────────────────
+    # ── Gait rewards (13) ─────────────────────────────────────────────────
     'gait_reward/alternation_reward',
     'gait_reward/step_frequency_reward',
     'gait_reward/stride_length_reward',
@@ -100,6 +100,7 @@ INFO_KEYWORDS = (
     'gait_reward/orientation_pen',
     'gait_reward/torso_rotation_pen',
     'gait_reward/foot_slide_pen',
+    'gait_reward/positional_lag_penalty',
 
     # ── Joint constraints (21) ────────────────────────────────────────────
     'joint_constraints/total_penalty',
