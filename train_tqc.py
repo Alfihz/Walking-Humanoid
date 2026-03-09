@@ -87,7 +87,7 @@ INFO_KEYWORDS = (
     'ultra_simple/upright_reward',
     'ultra_simple/neutral_pose_penalty',
 
-    # ── Gait rewards (16) ─────────────────────────────────────────────────
+    # ── Gait rewards (12) ─────────────────────────────────────────────────
     'gait_reward/alternation_reward',
     'gait_reward/step_frequency_reward',
     'gait_reward/stride_length_reward',
@@ -100,12 +100,8 @@ INFO_KEYWORDS = (
     'gait_reward/orientation_pen',
     'gait_reward/torso_rotation_pen',
     'gait_reward/foot_slide_pen',
-    'gait_reward/positional_lag_penalty',  # Gen2-04
-    'gait_reward/lock_penalty',            # Gen2-05: passive lock detection
-    'gait_reward/right_hip_torque',        # Gen2-05: diagnostic
-    'gait_reward/left_hip_torque',         # Gen2-05: diagnostic
 
-    # ── Joint constraints (21) ────────────────────────────────────────────
+    # ── Joint constraints (24) ────────────────────────────────────────────
     'joint_constraints/total_penalty',
     'joint_constraints/progress_scale',
     'joint_constraints/abdomen_penalty',
@@ -127,6 +123,9 @@ INFO_KEYWORDS = (
     'joint_constraints/ankle_x_penalty',
     'joint_constraints/ankle_x_right',
     'joint_constraints/ankle_x_left',
+    'joint_constraints/hip_z_penalty',   # Gen2-05
+    'joint_constraints/hip_z_right',     # Gen2-05
+    'joint_constraints/hip_z_left',      # Gen2-05
 
     # ── Arm swing (5) ─────────────────────────────────────────────────────
     'arm_swing/movement_reward',

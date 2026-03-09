@@ -1,31 +1,26 @@
 """
-HumanoidWalkEnv Gen2-05 - PASSIVE LEG LOCK DETECTION
-=====================================================
+HumanoidWalkEnv Gen2-05 - HIP Z CONSTRAINT (FOOT DIRECTION FIX)
+================================================================
 Based on Gen2-04 with one targeted fix:
 
 FIX (Gen2-05):
-- Positional lag penalty extended with passive lock detection:
-    * Reads hip_y actuator torque (qfrc_actuator) and joint velocity (qvel)
-    * A leg is "passively locked" when BOTH torque < 5 Nm AND velocity < 0.1 rad/s
-    * If the behind leg is also passively locked: immediate -5.0 penalty per step
-      (no tolerance window — passive locking is always an exploit)
-    * Positional lag penalty (45-step tolerance, -8.0/step) preserved unchanged
-    * Two new metrics: gait_reward/lock_penalty, gait_reward/right_hip_torque,
-      gait_reward/left_hip_torque
-    * Reason: robot planted right leg as a passive stabiliser pole and shuffled
-      only the left leg; torque+velocity check catches this unambiguously
+- Added hip_z deadband constraint to keep feet facing forward:
+    * hip_z_right (idx=11) and hip_z_left (idx=17) now constrained
+    * Weight: 4.0, Deadband: ±0.10 rad (≈±6°) — matches ankle_x deadband
+    * Applied AFTER curriculum scaling so always at full strength
+    * Reason: foot direction is controlled by hip_z (leg rotation), NOT ankle_x.
+      ankle_x only controls inversion/eversion (sole roll). The outward-pointing
+      foot seen in Gen2-01 was always a hip_z issue.
+    * New metrics: joint_constraints/hip_z_right, hip_z_left, hip_z_penalty
 
 FIX (Gen2-04 — preserved):
-- Positional lag penalty: 45-step tolerance, -8.0/step, capped -20
-- Reason: robot froze right foot and shuffled only left leg
+- Positional lag penalty: forces leg alternation (45-step tolerance, -8/step cap -20)
 
 FIX (Gen2-03 — preserved):
-- Ankle X weight 6.0→3.0, deadband 0.05→0.10 rad (±6°)
-- Reason: ±3° was too tight causing frozen-foot exploitation
+- Ankle X weight 3.0, deadband ±0.10 rad (±6°)
 
 FIX (Gen2-02 — preserved):
-- Ankle X applied AFTER curriculum scaling (always full strength)
-- Reason: foot twist was causing foot-on-foot collision and falls
+- Ankle X and Hip Z applied AFTER curriculum scaling (always full strength)
 
 Gen2-01 DESIGN PRINCIPLES (preserved):
 - Minimal reward components (4-5 core only)
@@ -44,8 +39,7 @@ BAKED-IN LESSONS FROM V17-V26:
 - Balance reward floor must not be too negative (was -20, now -5)
 - camera_name="track" must exist in XML (not just "back"/"side")
 
-METRICS: 78 metrics (75 from Gen2-04 + 3 new: lock_penalty,
-         right_hip_torque, left_hip_torque)
+METRICS: 78 metrics (75 from Gen2-04 + 3 new: hip_z_right, hip_z_left, hip_z_penalty)
 """
 
 from gymnasium import spaces
@@ -176,15 +170,18 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.shoulder2_constraint_weight = 1.5
         self.elbow_constraint_weight     = 0.8
         self.ankle_y_constraint_weight   = 1.2
-        # V28 FIX: Raised — foot lateral twist causes foot collision and falls.
-        # Enforced at full strength regardless of curriculum phase (see below).
-        self.ankle_x_constraint_weight   = 6.0
-        # Deadband: feet are allowed ±0.05 rad (≈±3°) of lateral tilt.
-        # No penalty inside the deadband; strong quadratic outside it.
-        self.ankle_x_deadband            = 0.05
+        # Gen2-03: ankle_x reworked with deadband
+        self.ankle_x_constraint_weight   = 3.0
+        # Deadband: feet are allowed ±0.10 rad (≈±6°) of lateral tilt.
+        self.ankle_x_deadband            = 0.10
         self.abdomen_x_constraint_weight = 2.0
         self.abdomen_y_constraint_weight = 1.5
         self.abdomen_z_constraint_weight = 1.8
+        # Gen2-05: hip_z controls foot direction (not ankle_x as previously assumed).
+        # Deadband: ±0.10 rad (≈±6°) of natural rotation allowed during swing.
+        # Applied AFTER curriculum scaling — always at full strength from step 1.
+        self.hip_z_constraint_weight     = 4.0
+        self.hip_z_deadband              = 0.10  # ±6°
 
         # --- Arm swing ---------------------------------------------------
         self.arm_swing_reward_weight        = 1.5
@@ -203,6 +200,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.abdomen_z_idx       = 7
         self.abdomen_y_idx       = 8
         self.abdomen_x_idx       = 9
+        self.hip_z_right_idx     = 11   # Gen2-05: hip rotation controls foot direction
+        self.hip_z_left_idx      = 17
         self.ankle_y_right_idx   = 14
         self.ankle_x_right_idx   = 15
         self.ankle_y_left_idx    = 20
@@ -225,20 +224,6 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.episode_start_x    = 0.0
         self.episode_start_y    = 0.0
         self.path_deviation_history = []
-
-        # Positional lag tracking — Gen2-04
-        # Counts how many consecutive steps each foot has been stuck behind
-        self.left_foot_lag_steps  = 0
-        self.right_foot_lag_steps = 0
-
-        # Hip Y actuator/qvel indices — Gen2-05
-        # Used to detect passive leg locking (stabiliser exploit).
-        # qfrc_actuator and qvel share the same DoF indexing.
-        # freejoint occupies indices 0-5, so joints start at index 6.
-        # hip_y_right = actuator 5 → qvel/qfrc index 11
-        # hip_y_left  = actuator 11 → qvel/qfrc index 17
-        self.hip_y_right_dof_idx = 11
-        self.hip_y_left_dof_idx  = 17
 
     # ------------------------------------------------------------------ #
     #  CURRICULUM CONTROL                                                 #
@@ -301,8 +286,6 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.path_deviation_history = []
         self.episode_start_x        = self.data.qpos[0]
         self.episode_start_y        = self.data.qpos[1]
-        self.left_foot_lag_steps    = 0
-        self.right_foot_lag_steps   = 0
 
         # Reset any timestep-local counters
         for attr in ('airborne_duration', 'double_support_duration',
@@ -433,6 +416,31 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/ankle_x_right']   = float(axr)
         info['joint_constraints/ankle_x_left']    = float(axl)
         info['joint_constraints/ankle_x_penalty'] = float(ax_pen)
+
+        # ── HIP Z (leg rotation = foot direction) ─────────────────────────
+        # hip_z controls which direction the foot points. Constraining it
+        # keeps both feet facing forward throughout the gait cycle.
+        # Applied AFTER curriculum scaling — always at full strength.
+        # Deadband: ±hip_z_deadband rad of natural rotation is free.
+        # Outside deadband: quadratic penalty on excess only.
+        hzr = qpos[self.hip_z_right_idx]
+        hzl = qpos[self.hip_z_left_idx]
+        db_hz = self.hip_z_deadband  # ±0.10 rad ≈ ±6°
+
+        def _hz_pen(angle):
+            excess = abs(angle) - db_hz
+            if excess > 0:
+                return -self.hip_z_constraint_weight * (excess ** 2)
+            return 0.0
+
+        hzr_pen = _hz_pen(hzr)
+        hzl_pen = _hz_pen(hzl)
+        hz_pen  = hzr_pen + hzl_pen
+        total  += hz_pen
+
+        info['joint_constraints/hip_z_right']   = float(hzr)
+        info['joint_constraints/hip_z_left']    = float(hzl)
+        info['joint_constraints/hip_z_penalty'] = float(hz_pen)
 
         info['joint_constraints/total_penalty']  = float(total)
         info['joint_constraints/progress_scale'] = float(scale)
@@ -720,100 +728,6 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         fslide *= self.foot_slide_penalty_weight
         gait_reward += fslide
         info['gait_reward/foot_slide_pen'] = float(fslide)
-
-        # ---- Positional lag + passive lock penalty (Gen2-05) ----
-        #
-        # TWO complementary checks, both symmetric L and R:
-        #
-        # CHECK 1 — Positional lag (unchanged from Gen2-04):
-        #   If a foot has been stuck behind the other for > LAG_TOLERANCE steps,
-        #   apply a growing penalty. Catches slow single-leg shuffling.
-        #
-        # CHECK 2 — Passive lock (new in Gen2-05):
-        #   A leg is "passively locked" when BOTH of these are true:
-        #     a) hip_y actuator torque is near zero  → robot not actively driving it
-        #     b) hip_y joint velocity is near zero   → joint is not moving
-        #   If the stuck (behind) leg is also passively locked, apply an
-        #   IMMEDIATE additional penalty — no tolerance window needed, because
-        #   a locked leg is unambiguously an exploit (not a normal gait phase).
-        #
-        # Why hip_y specifically?
-        #   Hip flexion/extension (hip_y) is the primary joint for swinging a
-        #   leg forward. If it has no torque and no velocity while the leg is
-        #   stuck behind, the robot is deliberately not using it — i.e., the
-        #   leg is being used as a passive stabilising pole.
-
-        # --- Thresholds (tunable) ---
-        LAG_TOLERANCE      = 45    # steps of positional lag before penalty starts
-        LAG_PENALTY        = -8.0  # per step beyond tolerance
-        LAG_CAP            = -20.0 # hard cap on lag penalty per foot
-
-        LOCK_TORQUE_THRESH = 5.0   # Nm  — below this = hip not actively driven
-        LOCK_VEL_THRESH    = 0.1   # rad/s — below this = hip not moving
-        LOCK_PENALTY       = -5.0  # per step while passively locked + behind
-        LOCK_CAP           = -15.0 # hard cap on lock penalty per foot
-
-        positional_lag_pen = 0.0
-        lock_pen           = 0.0
-
-        if forward_velocity > 0.1:
-            lf_x = self.data.site_xpos[self.left_foot_site_id][0]
-            rf_x = self.data.site_xpos[self.right_foot_site_id][0]
-
-            # --- Read hip_y torque and velocity for both legs ---
-            # qfrc_actuator: torque the actuator is currently applying (Nm)
-            # qvel: joint angular velocity (rad/s)
-            # Both use the same DoF index (freejoint occupies 0-5).
-            right_hip_torque = abs(self.data.qfrc_actuator[self.hip_y_right_dof_idx])
-            left_hip_torque  = abs(self.data.qfrc_actuator[self.hip_y_left_dof_idx])
-            right_hip_vel    = abs(self.data.qvel[self.hip_y_right_dof_idx])
-            left_hip_vel     = abs(self.data.qvel[self.hip_y_left_dof_idx])
-
-            # A leg is passively locked if BOTH torque AND velocity are near zero
-            right_locked = (right_hip_torque < LOCK_TORQUE_THRESH and
-                            right_hip_vel    < LOCK_VEL_THRESH)
-            left_locked  = (left_hip_torque  < LOCK_TORQUE_THRESH and
-                            left_hip_vel     < LOCK_VEL_THRESH)
-
-            # --- Update positional lag counters ---
-            if rf_x < lf_x:   # right foot stuck behind
-                self.right_foot_lag_steps += 1
-                self.left_foot_lag_steps   = 0
-            elif lf_x < rf_x:  # left foot stuck behind
-                self.left_foot_lag_steps  += 1
-                self.right_foot_lag_steps  = 0
-            else:
-                self.left_foot_lag_steps  = 0
-                self.right_foot_lag_steps = 0
-
-            # --- CHECK 1: positional lag penalty ---
-            right_excess = max(0, self.right_foot_lag_steps - LAG_TOLERANCE)
-            left_excess  = max(0, self.left_foot_lag_steps  - LAG_TOLERANCE)
-
-            if right_excess > 0:
-                positional_lag_pen += max(LAG_PENALTY * right_excess, LAG_CAP)
-            if left_excess > 0:
-                positional_lag_pen += max(LAG_PENALTY * left_excess,  LAG_CAP)
-
-            # --- CHECK 2: passive lock penalty ---
-            # Applied immediately (no tolerance) when the behind leg is also locked
-            if rf_x < lf_x and right_locked:
-                lock_pen += max(LOCK_PENALTY, LOCK_CAP)
-            if lf_x < rf_x and left_locked:
-                lock_pen += max(LOCK_PENALTY, LOCK_CAP)
-
-        else:
-            # Not moving — reset counters, no penalty
-            self.left_foot_lag_steps  = 0
-            self.right_foot_lag_steps = 0
-            right_hip_torque = abs(self.data.qfrc_actuator[self.hip_y_right_dof_idx])
-            left_hip_torque  = abs(self.data.qfrc_actuator[self.hip_y_left_dof_idx])
-
-        gait_reward += positional_lag_pen + lock_pen
-        info['gait_reward/positional_lag_penalty'] = float(positional_lag_pen)
-        info['gait_reward/lock_penalty']           = float(lock_pen)
-        info['gait_reward/right_hip_torque']       = float(abs(self.data.qfrc_actuator[self.hip_y_right_dof_idx]))
-        info['gait_reward/left_hip_torque']        = float(abs(self.data.qfrc_actuator[self.hip_y_left_dof_idx]))
 
         # Update last contacts
         self.last_left_contact  = left_contact
