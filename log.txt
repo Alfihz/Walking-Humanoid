@@ -3,3 +3,9 @@ Gen 2 - 01 (TQC01): Humanoid is still falling. This is caused by the right ankle
 
 Gen 2 - 02 (TQC02): Humanoid is still falling. The left leg obstructs the right leg thus turning the humanoid to the right and falling. The right leg "found" its safe spot and does not move due to the ankle_x constraints being too tight.
     Fix: Ankle_x constraints is reduced to allow less "fighting" from both feet.
+
+Gen 2 - 03 (TQC03): Humanoid is still falling. Same issue as previous version. Right leg gets locked up and does not move forward. Only the left leg moves forward. Right leg stays as an anchor.
+    Fix: Added a position counter. If the leg does not alternate within a duration of timesteps, the model will get penalized.
+
+Gen 2 - 04 (TQC04): Humanoid is not falling. The humanoid alternates its legs but keeps its right leg frozen as an anchor. This does not look natural.
+    Fix: Added a torque/force sensor to see whether the legs exert a force or not. If not, it will be penalized.

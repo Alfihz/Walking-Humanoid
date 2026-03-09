@@ -1,18 +1,23 @@
 """
-HumanoidWalkEnv Gen2-04 - POSITIONAL LAG PENALTY
-=================================================
-Based on Gen2-03 with one targeted fix:
+HumanoidWalkEnv Gen2-05 - PASSIVE LEG LOCK DETECTION
+=====================================================
+Based on Gen2-04 with one targeted fix:
 
-FIX (Gen2-04):
-- Added positional lag penalty to force proper leg alternation:
-    * Tracks how many consecutive steps each foot is stuck behind the other
-    * Tolerance window: 45 steps (0.45s sim time) — covers a natural stride
-    * Penalty: -8.0 per step beyond tolerance, capped at -20 per foot
-    * Only active when forward_velocity > 0.1 m/s (no penalty while standing)
-    * Perfectly symmetric: same logic applied to both left and right foot
-    * New metric emitted: gait_reward/positional_lag_penalty
-    * Reason: robot exploited ankle constraint by freezing right foot and
-      shuffling only left leg forward indefinitely
+FIX (Gen2-05):
+- Positional lag penalty extended with passive lock detection:
+    * Reads hip_y actuator torque (qfrc_actuator) and joint velocity (qvel)
+    * A leg is "passively locked" when BOTH torque < 5 Nm AND velocity < 0.1 rad/s
+    * If the behind leg is also passively locked: immediate -5.0 penalty per step
+      (no tolerance window — passive locking is always an exploit)
+    * Positional lag penalty (45-step tolerance, -8.0/step) preserved unchanged
+    * Two new metrics: gait_reward/lock_penalty, gait_reward/right_hip_torque,
+      gait_reward/left_hip_torque
+    * Reason: robot planted right leg as a passive stabiliser pole and shuffled
+      only the left leg; torque+velocity check catches this unambiguously
+
+FIX (Gen2-04 — preserved):
+- Positional lag penalty: 45-step tolerance, -8.0/step, capped -20
+- Reason: robot froze right foot and shuffled only left leg
 
 FIX (Gen2-03 — preserved):
 - Ankle X weight 6.0→3.0, deadband 0.05→0.10 rad (±6°)
@@ -39,7 +44,8 @@ BAKED-IN LESSONS FROM V17-V26:
 - Balance reward floor must not be too negative (was -20, now -5)
 - camera_name="track" must exist in XML (not just "back"/"side")
 
-METRICS: 75 metrics (74 from Gen2-01 + 1 new: gait_reward/positional_lag_penalty)
+METRICS: 78 metrics (75 from Gen2-04 + 3 new: lock_penalty,
+         right_hip_torque, left_hip_torque)
 """
 
 from gymnasium import spaces
@@ -114,7 +120,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-04 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-05 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -224,6 +230,15 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Counts how many consecutive steps each foot has been stuck behind
         self.left_foot_lag_steps  = 0
         self.right_foot_lag_steps = 0
+
+        # Hip Y actuator/qvel indices — Gen2-05
+        # Used to detect passive leg locking (stabiliser exploit).
+        # qfrc_actuator and qvel share the same DoF indexing.
+        # freejoint occupies indices 0-5, so joints start at index 6.
+        # hip_y_right = actuator 5 → qvel/qfrc index 11
+        # hip_y_left  = actuator 11 → qvel/qfrc index 17
+        self.hip_y_right_dof_idx = 11
+        self.hip_y_left_dof_idx  = 17
 
     # ------------------------------------------------------------------ #
     #  CURRICULUM CONTROL                                                 #
@@ -706,46 +721,99 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         gait_reward += fslide
         info['gait_reward/foot_slide_pen'] = float(fslide)
 
-        # ---- Positional lag penalty (Gen2-04) ----
-        # If a foot has been stuck behind the other for too long, penalise it.
-        # Only active when robot is moving forward (avoids penalising standing).
-        # Tolerance: 45 steps = 0.45s sim time. At 0.5 m/s a stride takes
-        # ~0.7s, so the back foot should advance within ~0.35s — 45 steps
-        # gives natural tolerance without allowing permanent single-leg shuffle.
-        LAG_TOLERANCE  = 45    # steps before penalty kicks in
-        LAG_PENALTY    = -8.0  # per step beyond tolerance (capped at -20)
+        # ---- Positional lag + passive lock penalty (Gen2-05) ----
+        #
+        # TWO complementary checks, both symmetric L and R:
+        #
+        # CHECK 1 — Positional lag (unchanged from Gen2-04):
+        #   If a foot has been stuck behind the other for > LAG_TOLERANCE steps,
+        #   apply a growing penalty. Catches slow single-leg shuffling.
+        #
+        # CHECK 2 — Passive lock (new in Gen2-05):
+        #   A leg is "passively locked" when BOTH of these are true:
+        #     a) hip_y actuator torque is near zero  → robot not actively driving it
+        #     b) hip_y joint velocity is near zero   → joint is not moving
+        #   If the stuck (behind) leg is also passively locked, apply an
+        #   IMMEDIATE additional penalty — no tolerance window needed, because
+        #   a locked leg is unambiguously an exploit (not a normal gait phase).
+        #
+        # Why hip_y specifically?
+        #   Hip flexion/extension (hip_y) is the primary joint for swinging a
+        #   leg forward. If it has no torque and no velocity while the leg is
+        #   stuck behind, the robot is deliberately not using it — i.e., the
+        #   leg is being used as a passive stabilising pole.
+
+        # --- Thresholds (tunable) ---
+        LAG_TOLERANCE      = 45    # steps of positional lag before penalty starts
+        LAG_PENALTY        = -8.0  # per step beyond tolerance
+        LAG_CAP            = -20.0 # hard cap on lag penalty per foot
+
+        LOCK_TORQUE_THRESH = 5.0   # Nm  — below this = hip not actively driven
+        LOCK_VEL_THRESH    = 0.1   # rad/s — below this = hip not moving
+        LOCK_PENALTY       = -5.0  # per step while passively locked + behind
+        LOCK_CAP           = -15.0 # hard cap on lock penalty per foot
 
         positional_lag_pen = 0.0
+        lock_pen           = 0.0
+
         if forward_velocity > 0.1:
             lf_x = self.data.site_xpos[self.left_foot_site_id][0]
             rf_x = self.data.site_xpos[self.right_foot_site_id][0]
 
-            # Right foot stuck behind left foot
-            if rf_x < lf_x:
+            # --- Read hip_y torque and velocity for both legs ---
+            # qfrc_actuator: torque the actuator is currently applying (Nm)
+            # qvel: joint angular velocity (rad/s)
+            # Both use the same DoF index (freejoint occupies 0-5).
+            right_hip_torque = abs(self.data.qfrc_actuator[self.hip_y_right_dof_idx])
+            left_hip_torque  = abs(self.data.qfrc_actuator[self.hip_y_left_dof_idx])
+            right_hip_vel    = abs(self.data.qvel[self.hip_y_right_dof_idx])
+            left_hip_vel     = abs(self.data.qvel[self.hip_y_left_dof_idx])
+
+            # A leg is passively locked if BOTH torque AND velocity are near zero
+            right_locked = (right_hip_torque < LOCK_TORQUE_THRESH and
+                            right_hip_vel    < LOCK_VEL_THRESH)
+            left_locked  = (left_hip_torque  < LOCK_TORQUE_THRESH and
+                            left_hip_vel     < LOCK_VEL_THRESH)
+
+            # --- Update positional lag counters ---
+            if rf_x < lf_x:   # right foot stuck behind
                 self.right_foot_lag_steps += 1
                 self.left_foot_lag_steps   = 0
-            # Left foot stuck behind right foot
-            elif lf_x < rf_x:
+            elif lf_x < rf_x:  # left foot stuck behind
                 self.left_foot_lag_steps  += 1
                 self.right_foot_lag_steps  = 0
             else:
                 self.left_foot_lag_steps  = 0
                 self.right_foot_lag_steps = 0
 
+            # --- CHECK 1: positional lag penalty ---
             right_excess = max(0, self.right_foot_lag_steps - LAG_TOLERANCE)
             left_excess  = max(0, self.left_foot_lag_steps  - LAG_TOLERANCE)
 
             if right_excess > 0:
-                positional_lag_pen += max(LAG_PENALTY * right_excess, -20.0)
+                positional_lag_pen += max(LAG_PENALTY * right_excess, LAG_CAP)
             if left_excess > 0:
-                positional_lag_pen += max(LAG_PENALTY * left_excess,  -20.0)
+                positional_lag_pen += max(LAG_PENALTY * left_excess,  LAG_CAP)
+
+            # --- CHECK 2: passive lock penalty ---
+            # Applied immediately (no tolerance) when the behind leg is also locked
+            if rf_x < lf_x and right_locked:
+                lock_pen += max(LOCK_PENALTY, LOCK_CAP)
+            if lf_x < rf_x and left_locked:
+                lock_pen += max(LOCK_PENALTY, LOCK_CAP)
+
         else:
-            # Not moving — reset counters, don't penalise
+            # Not moving — reset counters, no penalty
             self.left_foot_lag_steps  = 0
             self.right_foot_lag_steps = 0
+            right_hip_torque = abs(self.data.qfrc_actuator[self.hip_y_right_dof_idx])
+            left_hip_torque  = abs(self.data.qfrc_actuator[self.hip_y_left_dof_idx])
 
-        gait_reward += positional_lag_pen
+        gait_reward += positional_lag_pen + lock_pen
         info['gait_reward/positional_lag_penalty'] = float(positional_lag_pen)
+        info['gait_reward/lock_penalty']           = float(lock_pen)
+        info['gait_reward/right_hip_torque']       = float(abs(self.data.qfrc_actuator[self.hip_y_right_dof_idx]))
+        info['gait_reward/left_hip_torque']        = float(abs(self.data.qfrc_actuator[self.hip_y_left_dof_idx]))
 
         # Update last contacts
         self.last_left_contact  = left_contact

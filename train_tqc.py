@@ -25,8 +25,8 @@ SAVE_FREQ = 1_000_000
 TOTAL_TIMESTEPS = 20_000_000
 
 # Curriculum phases
-STANDING_PHASE_TIMESTEPS = int(0.15 * TOTAL_TIMESTEPS)  # 15% standing 
-CURRICULUM_END_TIMESTEPS = int(0.45 * TOTAL_TIMESTEPS)  # 30% transition, then full walking
+STANDING_PHASE_TIMESTEPS = int(0.15 * TOTAL_TIMESTEPS)  # 20% standing 
+CURRICULUM_END_TIMESTEPS = int(0.45 * TOTAL_TIMESTEPS)  # 60% total
 
 # Model loading
 LOAD_MODEL_PATH = None
@@ -35,8 +35,8 @@ LOAD_MODEL_PATH = None
 AUTO_INCREMENT_DIRS = True
 
 # ============================================================================
-# INFO_KEYWORDS - MUST MATCH V27 METRIC NAMES EXACTLY
-# Total: 74 metrics across 9 groups
+# INFO_KEYWORDS - MUST MATCH Gen2-05 METRIC NAMES EXACTLY
+# Total: 78 metrics across 9 groups
 # ============================================================================
 INFO_KEYWORDS = (
     # ── Base rewards (5) ─────────────────────────────────────────────────
@@ -87,7 +87,7 @@ INFO_KEYWORDS = (
     'ultra_simple/upright_reward',
     'ultra_simple/neutral_pose_penalty',
 
-    # ── Gait rewards (13) ─────────────────────────────────────────────────
+    # ── Gait rewards (16) ─────────────────────────────────────────────────
     'gait_reward/alternation_reward',
     'gait_reward/step_frequency_reward',
     'gait_reward/stride_length_reward',
@@ -100,7 +100,10 @@ INFO_KEYWORDS = (
     'gait_reward/orientation_pen',
     'gait_reward/torso_rotation_pen',
     'gait_reward/foot_slide_pen',
-    'gait_reward/positional_lag_penalty',
+    'gait_reward/positional_lag_penalty',  # Gen2-04
+    'gait_reward/lock_penalty',            # Gen2-05: passive lock detection
+    'gait_reward/right_hip_torque',        # Gen2-05: diagnostic
+    'gait_reward/left_hip_torque',         # Gen2-05: diagnostic
 
     # ── Joint constraints (21) ────────────────────────────────────────────
     'joint_constraints/total_penalty',
