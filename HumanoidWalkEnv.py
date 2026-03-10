@@ -1,9 +1,9 @@
 """
-HumanoidWalkEnv Gen2-05 - HIP Z CONSTRAINT (FOOT DIRECTION FIX)
+HumanoidWalkEnv Gen2-06 - HIP Z CONSTRAINT (FOOT DIRECTION FIX)
 ================================================================
-Based on Gen2-04 with one targeted fix:
+Based on Gen2-05 with one targeted fix:
 
-FIX (Gen2-05):
+FIX (Gen2-06):
 - Added hip_z deadband constraint to keep feet facing forward:
     * hip_z_right (idx=11) and hip_z_left (idx=17) now constrained
     * Weight: 4.0, Deadband: ±0.10 rad (≈±6°) — matches ankle_x deadband
@@ -13,7 +13,7 @@ FIX (Gen2-05):
       foot seen in Gen2-01 was always a hip_z issue.
     * New metrics: joint_constraints/hip_z_right, hip_z_left, hip_z_penalty
 
-FIX (Gen2-04 — preserved):
+FIX (Gen2-05 — preserved):
 - Positional lag penalty: forces leg alternation (45-step tolerance, -8/step cap -20)
 
 FIX (Gen2-03 — preserved):
@@ -39,7 +39,7 @@ BAKED-IN LESSONS FROM V17-V26:
 - Balance reward floor must not be too negative (was -20, now -5)
 - camera_name="track" must exist in XML (not just "back"/"side")
 
-METRICS: 78 metrics (75 from Gen2-04 + 3 new: hip_z_right, hip_z_left, hip_z_penalty)
+METRICS: 78 metrics (75 from Gen2-05 + 3 new: hip_z_right, hip_z_left, hip_z_penalty)
 """
 
 from gymnasium import spaces
@@ -114,7 +114,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-05 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-06 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)

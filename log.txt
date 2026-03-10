@@ -9,6 +9,7 @@ Gen 2 - 03 (TQC03): Humanoid is still falling. Same issue as previous version. R
 
 Gen 2 - 04 (TQC04): Humanoid is not falling. The humanoid alternates its legs but keeps its right leg frozen as an anchor. This does not look natural.
     Fix: Added a torque/force sensor to see whether the legs exert a force or not. If not, it will be penalized.
+    (Accidentally deleted the models for this)
 
 Gen 2 - 05 (TQC05): Humanoid is not falling. We found out that the reason the foot is facing inwards/outwards is not because of ankle_x but becaues of hip_z. The right leg, although still stiff, is moving slightly.
     Fix: Add penalty and constraint on hip_z so it does not turn the foot inwards/outwards. We are going to fix the foot facing inwards first. We will continue with the right leg stiffness in the next version.
