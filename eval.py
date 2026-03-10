@@ -61,7 +61,7 @@ def save_video(frames: list, path: str, fps: int = 100):
 
 def evaluate(model_path, vecnormalize_path=None, episodes=5, render=True,
              record_dir=None, video_length=3000, track_camera=True,
-             track_camera_name="track"):
+             track_camera_name="track", switch_cameras=False):
     """
     Evaluate a trained humanoid model.
 
@@ -77,6 +77,9 @@ def evaluate(model_path, vecnormalize_path=None, episodes=5, render=True,
         record_dir:        Directory to save video (None = no recording).
         video_length:      Hard step cap when recording.
         track_camera:      Use the XML tracking camera during recording.
+        track_camera_name: Camera name to use (ignored when switch_cameras=True).
+        switch_cameras:    If True, cycle through track → track_side → track_front
+                           in equal thirds of video_length. Recording only.
     """
 
     # rgb_array mode is required to capture frames manually.
@@ -157,7 +160,19 @@ def evaluate(model_path, vecnormalize_path=None, episodes=5, render=True,
                 base = _base_env[0]
                 if track_camera:
                     try:
-                        base.mujoco_renderer.camera_id = base.model.camera(track_camera_name).id
+                        if switch_cameras:
+                            # Divide video_length into 3 equal thirds
+                            # 0–33%: track (back), 33–66%: track_side, 66–100%: track_front
+                            third = video_length / 3
+                            if total_steps < third:
+                                cam_name = "track"
+                            elif total_steps < 2 * third:
+                                cam_name = "track_side"
+                            else:
+                                cam_name = "track_front"
+                        else:
+                            cam_name = track_camera_name
+                        base.mujoco_renderer.camera_id = base.model.camera(cam_name).id
                     except Exception:
                         base.mujoco_renderer.camera_id = -1
 
@@ -197,6 +212,11 @@ if __name__ == "__main__":
     parser.add_argument("--video-length",    type=int, default=None, help="Hard step cap when recording (overrides VIDEO_TIMESTEPS)")
     parser.add_argument("--no-render",       action="store_true",    help="Disable live render window")
     parser.add_argument("--no-track-camera", action="store_true",    help="Disable camera tracking")
+    parser.add_argument("--camera",          type=str, default="track",
+                        choices=["track", "track_side", "track_front", "back", "side", "egocentric"],
+                        help="Camera to use when recording (default: track). Ignored when --switch is set.")
+    parser.add_argument("--switch",          action="store_true",
+                        help="Cycle cameras in thirds: track → track_side → track_front. Recording only.")
     args = parser.parse_args()
 
     # Parser takes priority; fall back to top-of-file variables
@@ -217,6 +237,7 @@ if __name__ == "__main__":
     print(f"  Model    : {model_path}")
     print(f"  VecNorm  : {vecnorm_path}")
     print(f"  Video dir: {record_dir or 'disabled'}")
+    print(f"  Camera   : {'switch (track → track_side → track_front)' if args.switch else args.camera}")
     print(f"  Steps    : {video_length}")
     print(f"{'='*55}\n")
 
@@ -228,5 +249,6 @@ if __name__ == "__main__":
         record_dir=record_dir,
         video_length=video_length,
         track_camera=not args.no_track_camera,
-        track_camera_name="track",   # must match camera name in XML
+        track_camera_name=args.camera,
+        switch_cameras=args.switch,
     )

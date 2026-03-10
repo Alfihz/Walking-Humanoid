@@ -98,7 +98,8 @@
   <!-- Model Definition -->
   <worldbody>
     <!-- Floor -->
-    <geom name="floor" size="10 10 .05" type="plane" material="grid" condim="3"/> <!-- Increased floor size -->
+    <geom name="floor" size="0 0 .05" type="plane" material="grid" condim="3"/>
+
     <light name="spotlight" mode="targetbodycom" target="torax" diffuse=".8 .8 .8" specular="0.3 0.3 0.3" pos="0 -6 4" cutoff="30"/>
 
     <!-- Root Body (Torax) - Changed root to torax -->
@@ -106,7 +107,12 @@
       <light name="top" pos="0 0 2" mode="trackcom"/>
       <camera name="back" pos="-3 0 1" xyaxes="0 -1 0 1 0 2" mode="trackcom"/>
       <camera name="side" pos="0 -3 1" xyaxes="1 0 0 0 1 2" mode="trackcom"/>
-      <camera name="track" pos="-3.5 0 1.5" xyaxes="0 -1 0 0.5 0 1" mode="trackcom"/>
+      <!-- track cameras: follow body position exactly (mode="track") -->
+      <camera name="track"       pos="-3 0 1"   xyaxes="0 -1 0  1  0 2" mode="track"/>
+      <camera name="track_side"  pos="0 -4 1.2" xyaxes="1  0 0  0  0.3 1" mode="track"/>
+      <!-- track_front: camera sits 3m in front, looks BACK toward humanoid -->
+      <!-- xyaxes: right=(0,1,0)  up=(-1,0,2) => looks in (-2,0,-1) direction -->
+      <camera name="track_front" pos="3  0 1"   xyaxes="0  1 0 -1  0 2" mode="track"/>
       <freejoint name="root"/>
       <!-- Torax geom and inertial from original -->
       <geom name="torax" fromto="0 -.12875 0 0 .12875 0" size=".11125"/>

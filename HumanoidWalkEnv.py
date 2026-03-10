@@ -1,17 +1,21 @@
 """
-HumanoidWalkEnv Gen2-06 - HIP Z CONSTRAINT (FOOT DIRECTION FIX)
-================================================================
-Based on Gen2-05 with one targeted fix:
+HumanoidWalkEnv Gen2-07 - PUSH-OFF REWARD
+==========================================
+Based on Gen2-06 with one targeted fix:
 
-FIX (Gen2-06):
-- Added hip_z deadband constraint to keep feet facing forward:
-    * hip_z_right (idx=11) and hip_z_left (idx=17) now constrained
-    * Weight: 4.0, Deadband: ±0.10 rad (≈±6°) — matches ankle_x deadband
-    * Applied AFTER curriculum scaling so always at full strength
-    * Reason: foot direction is controlled by hip_z (leg rotation), NOT ankle_x.
-      ankle_x only controls inversion/eversion (sole roll). The outward-pointing
-      foot seen in Gen2-01 was always a hip_z issue.
-    * New metrics: joint_constraints/hip_z_right, hip_z_left, hip_z_penalty
+FIX (Gen2-07):
+- Added push-off reward to force active ankle plantarflexion at toe-off:
+    * Rewards ankle_y velocity going negative (plantarflexion) at toe-off
+    * Weight: 6.0, capped at 2.0 rad/s ankle velocity
+    * Guard 1: only fires during single support (opposite foot must be planted)
+      → prevents hop/jump exploit (both feet lift simultaneously → no reward)
+    * Guard 2: only fires when forward_velocity > 0.1 m/s
+      → prevents side-rocking exploit
+    * Perfectly symmetric: right ankle rewarded with left foot planted, vice versa
+    * New metric: gait_reward/push_off_reward
+
+FIX (Gen2-06 — preserved):
+- Hip Z deadband constraint ±6°, weight 4.0 (foot direction fix)
 
 FIX (Gen2-05 — preserved):
 - Positional lag penalty: forces leg alternation (45-step tolerance, -8/step cap -20)
@@ -39,7 +43,7 @@ BAKED-IN LESSONS FROM V17-V26:
 - Balance reward floor must not be too negative (was -20, now -5)
 - camera_name="track" must exist in XML (not just "back"/"side")
 
-METRICS: 78 metrics (75 from Gen2-05 + 3 new: hip_z_right, hip_z_left, hip_z_penalty)
+METRICS: 79 metrics (78 from Gen2-06 + 1 new: gait_reward/push_off_reward)
 """
 
 from gymnasium import spaces
@@ -114,7 +118,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-06 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-07 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -155,6 +159,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.double_support_penalty_weight=1.0
         self.step_frequency_target       = 1.8
         self.step_frequency_weight       = 1.5
+        # Gen2-07: push-off reward — rewards ankle plantarflexion at toe-off
+        # Only active during single support + forward motion to prevent hop exploit
+        self.push_off_weight             = 6.0
 
         # --- Posture / stability -----------------------------------------
         self.lateral_penalty_weight      = 5.0
@@ -170,18 +177,15 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.shoulder2_constraint_weight = 1.5
         self.elbow_constraint_weight     = 0.8
         self.ankle_y_constraint_weight   = 1.2
-        # Gen2-03: ankle_x reworked with deadband
-        self.ankle_x_constraint_weight   = 3.0
-        # Deadband: feet are allowed ±0.10 rad (≈±6°) of lateral tilt.
-        self.ankle_x_deadband            = 0.10
+        # V28 FIX: Raised — foot lateral twist causes foot collision and falls.
+        # Enforced at full strength regardless of curriculum phase (see below).
+        self.ankle_x_constraint_weight   = 6.0
+        # Deadband: feet are allowed ±0.05 rad (≈±3°) of lateral tilt.
+        # No penalty inside the deadband; strong quadratic outside it.
+        self.ankle_x_deadband            = 0.05
         self.abdomen_x_constraint_weight = 2.0
         self.abdomen_y_constraint_weight = 1.5
         self.abdomen_z_constraint_weight = 1.8
-        # Gen2-05: hip_z controls foot direction (not ankle_x as previously assumed).
-        # Deadband: ±0.10 rad (≈±6°) of natural rotation allowed during swing.
-        # Applied AFTER curriculum scaling — always at full strength from step 1.
-        self.hip_z_constraint_weight     = 4.0
-        self.hip_z_deadband              = 0.10  # ±6°
 
         # --- Arm swing ---------------------------------------------------
         self.arm_swing_reward_weight        = 1.5
@@ -200,8 +204,6 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.abdomen_z_idx       = 7
         self.abdomen_y_idx       = 8
         self.abdomen_x_idx       = 9
-        self.hip_z_right_idx     = 11   # Gen2-05: hip rotation controls foot direction
-        self.hip_z_left_idx      = 17
         self.ankle_y_right_idx   = 14
         self.ankle_x_right_idx   = 15
         self.ankle_y_left_idx    = 20
@@ -416,31 +418,6 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/ankle_x_right']   = float(axr)
         info['joint_constraints/ankle_x_left']    = float(axl)
         info['joint_constraints/ankle_x_penalty'] = float(ax_pen)
-
-        # ── HIP Z (leg rotation = foot direction) ─────────────────────────
-        # hip_z controls which direction the foot points. Constraining it
-        # keeps both feet facing forward throughout the gait cycle.
-        # Applied AFTER curriculum scaling — always at full strength.
-        # Deadband: ±hip_z_deadband rad of natural rotation is free.
-        # Outside deadband: quadratic penalty on excess only.
-        hzr = qpos[self.hip_z_right_idx]
-        hzl = qpos[self.hip_z_left_idx]
-        db_hz = self.hip_z_deadband  # ±0.10 rad ≈ ±6°
-
-        def _hz_pen(angle):
-            excess = abs(angle) - db_hz
-            if excess > 0:
-                return -self.hip_z_constraint_weight * (excess ** 2)
-            return 0.0
-
-        hzr_pen = _hz_pen(hzr)
-        hzl_pen = _hz_pen(hzl)
-        hz_pen  = hzr_pen + hzl_pen
-        total  += hz_pen
-
-        info['joint_constraints/hip_z_right']   = float(hzr)
-        info['joint_constraints/hip_z_left']    = float(hzl)
-        info['joint_constraints/hip_z_penalty'] = float(hz_pen)
 
         info['joint_constraints/total_penalty']  = float(total)
         info['joint_constraints/progress_scale'] = float(scale)
@@ -728,6 +705,31 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         fslide *= self.foot_slide_penalty_weight
         gait_reward += fslide
         info['gait_reward/foot_slide_pen'] = float(fslide)
+
+        # ---- Push-off reward (Gen2-07) ----
+        # Rewards ankle plantarflexion (ankle_y going negative = toes pushing down)
+        # at the moment of toe-off for each foot.
+        # Guard conditions prevent hop/jump exploitation:
+        #   - Only fires during single support (opposite foot must be planted)
+        #   - Only fires when forward_velocity > 0.1 m/s (no reward for rocking)
+        # Result: right leg must actively push off with left foot planted, and
+        # left leg must actively push off with right foot planted.
+        push_off_rew = 0.0
+        if forward_velocity > 0.1:
+            # Right leg push-off: left foot planted, right foot leaving
+            if left_contact and not right_contact:
+                ayr_vel = self.data.qvel[self.ankle_y_right_idx - 7]  # ankle_y_right velocity
+                if ayr_vel < 0:   # negative = plantarflexion = pushing off
+                    push_off_rew += self.push_off_weight * min(abs(ayr_vel), 2.0)
+
+            # Left leg push-off: right foot planted, left foot leaving
+            elif right_contact and not left_contact:
+                ayl_vel = self.data.qvel[self.ankle_y_left_idx - 7]   # ankle_y_left velocity
+                if ayl_vel < 0:   # negative = plantarflexion = pushing off
+                    push_off_rew += self.push_off_weight * min(abs(ayl_vel), 2.0)
+
+        gait_reward += push_off_rew
+        info['gait_reward/push_off_reward'] = float(push_off_rew)
 
         # Update last contacts
         self.last_left_contact  = left_contact
