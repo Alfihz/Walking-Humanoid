@@ -4,21 +4,20 @@ HumanoidWalkEnv Gen2-07 - PUSH-OFF REWARD
 Based on Gen2-06 with one targeted fix:
 
 FIX (Gen2-07):
-- Added push-off reward to force active ankle plantarflexion at toe-off:
-    * Rewards ankle_y velocity going negative (plantarflexion) at toe-off
-    * Weight: 6.0, capped at 2.0 rad/s ankle velocity
-    * Guard 1: only fires during single support (opposite foot must be planted)
-      → prevents hop/jump exploit (both feet lift simultaneously → no reward)
+- Push-off reward: rewards ankle plantarflexion at toe-off
+    * Weight: 6.0, capped at 2.0 rad/s
+    * Guard 1: only fires during single support (opposite foot planted)
     * Guard 2: only fires when forward_velocity > 0.1 m/s
-      → prevents side-rocking exploit
-    * Perfectly symmetric: right ankle rewarded with left foot planted, vice versa
     * New metric: gait_reward/push_off_reward
 
 FIX (Gen2-06 — preserved):
-- Hip Z deadband constraint ±6°, weight 4.0 (foot direction fix)
+- Hip Z deadband constraint: weight 4.0, deadband ±0.10 rad (±6°)
+    * hip_z controls foot direction (not ankle_x as previously assumed)
+    * Applied AFTER curriculum scaling — always full strength
 
 FIX (Gen2-05 — preserved):
-- Positional lag penalty: forces leg alternation (45-step tolerance, -8/step cap -20)
+- Positional lag penalty: forces leg alternation
+    * LAG_TOLERANCE=45 steps, LAG_PENALTY=-8.0/step, capped at -20
 
 FIX (Gen2-03 — preserved):
 - Ankle X weight 3.0, deadband ±0.10 rad (±6°)
@@ -43,7 +42,7 @@ BAKED-IN LESSONS FROM V17-V26:
 - Balance reward floor must not be too negative (was -20, now -5)
 - camera_name="track" must exist in XML (not just "back"/"side")
 
-METRICS: 79 metrics (78 from Gen2-06 + 1 new: gait_reward/push_off_reward)
+METRICS: 79 metrics across 9 groups
 """
 
 from gymnasium import spaces
@@ -159,9 +158,6 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.double_support_penalty_weight=1.0
         self.step_frequency_target       = 1.8
         self.step_frequency_weight       = 1.5
-        # Gen2-07: push-off reward — rewards ankle plantarflexion at toe-off
-        # Only active during single support + forward motion to prevent hop exploit
-        self.push_off_weight             = 6.0
 
         # --- Posture / stability -----------------------------------------
         self.lateral_penalty_weight      = 5.0
@@ -177,15 +173,18 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.shoulder2_constraint_weight = 1.5
         self.elbow_constraint_weight     = 0.8
         self.ankle_y_constraint_weight   = 1.2
-        # V28 FIX: Raised — foot lateral twist causes foot collision and falls.
-        # Enforced at full strength regardless of curriculum phase (see below).
-        self.ankle_x_constraint_weight   = 6.0
-        # Deadband: feet are allowed ±0.05 rad (≈±3°) of lateral tilt.
-        # No penalty inside the deadband; strong quadratic outside it.
-        self.ankle_x_deadband            = 0.05
+        # Gen2-03: weight lowered 6.0→3.0, deadband widened ±3°→±6°
+        self.ankle_x_constraint_weight   = 3.0
+        # Deadband: feet are allowed ±0.10 rad (≈±6°) of lateral tilt.
+        self.ankle_x_deadband            = 0.10
         self.abdomen_x_constraint_weight = 2.0
         self.abdomen_y_constraint_weight = 1.5
         self.abdomen_z_constraint_weight = 1.8
+        # Gen2-06: hip_z controls foot direction (not ankle_x as previously assumed).
+        # Deadband: ±0.10 rad (≈±6°) of natural rotation allowed during swing.
+        # Applied AFTER curriculum scaling — always at full strength from step 1.
+        self.hip_z_constraint_weight     = 4.0
+        self.hip_z_deadband              = 0.10  # ±6°
 
         # --- Arm swing ---------------------------------------------------
         self.arm_swing_reward_weight        = 1.5
@@ -194,6 +193,16 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Forward requirement -----------------------------------------
         # Much lighter than V17's -100 — just a nudge, not a cliff
         self.forward_requirement_penalty    = -20.0  # Applied when avg_vel < 0.1
+
+        # --- Positional lag penalty (Gen2-05) ----------------------------
+        # If one foot stays behind the other for too long while moving,
+        # apply a per-step penalty to force alternation.
+        self.LAG_TOLERANCE  = 45    # steps before penalty kicks in
+        self.LAG_PENALTY    = -8.0  # per step, capped at -20
+
+        # --- Push-off reward (Gen2-07) -----------------------------------
+        # Rewards ankle plantarflexion at toe-off during single support.
+        self.push_off_weight = 6.0
 
         # --- Clearance ---------------------------------------------------
         self.min_clearance_height = 0.08  # 8 cm minimum swing clearance
@@ -204,6 +213,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.abdomen_z_idx       = 7
         self.abdomen_y_idx       = 8
         self.abdomen_x_idx       = 9
+        self.hip_z_right_idx     = 11   # Gen2-06: hip rotation controls foot direction
+        self.hip_z_left_idx      = 17
         self.ankle_y_right_idx   = 14
         self.ankle_x_right_idx   = 15
         self.ankle_y_left_idx    = 20
@@ -226,6 +237,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.episode_start_x    = 0.0
         self.episode_start_y    = 0.0
         self.path_deviation_history = []
+        self.left_foot_lag_steps  = 0   # Gen2-05: positional lag counter
+        self.right_foot_lag_steps = 0
 
     # ------------------------------------------------------------------ #
     #  CURRICULUM CONTROL                                                 #
@@ -288,6 +301,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.path_deviation_history = []
         self.episode_start_x        = self.data.qpos[0]
         self.episode_start_y        = self.data.qpos[1]
+        self.left_foot_lag_steps    = 0   # Gen2-05: positional lag counters
+        self.right_foot_lag_steps   = 0
 
         # Reset any timestep-local counters
         for attr in ('airborne_duration', 'double_support_duration',
@@ -418,6 +433,29 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/ankle_x_right']   = float(axr)
         info['joint_constraints/ankle_x_left']    = float(axl)
         info['joint_constraints/ankle_x_penalty'] = float(ax_pen)
+
+        # ── HIP Z (leg rotation = foot direction) ─────────────────────────
+        # Gen2-06: hip_z controls which direction the foot points.
+        # Applied AFTER curriculum scaling — always at full strength.
+        # Deadband: ±hip_z_deadband rad of natural rotation is free.
+        hzr = qpos[self.hip_z_right_idx]
+        hzl = qpos[self.hip_z_left_idx]
+        db_hz = self.hip_z_deadband
+
+        def _hz_pen(angle):
+            excess = abs(angle) - db_hz
+            if excess > 0:
+                return -self.hip_z_constraint_weight * (excess ** 2)
+            return 0.0
+
+        hzr_pen = _hz_pen(hzr)
+        hzl_pen = _hz_pen(hzl)
+        hz_pen  = hzr_pen + hzl_pen
+        total  += hz_pen
+
+        info['joint_constraints/hip_z_right']   = float(hzr)
+        info['joint_constraints/hip_z_left']    = float(hzl)
+        info['joint_constraints/hip_z_penalty'] = float(hz_pen)
 
         info['joint_constraints/total_penalty']  = float(total)
         info['joint_constraints/progress_scale'] = float(scale)
@@ -706,26 +744,51 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         gait_reward += fslide
         info['gait_reward/foot_slide_pen'] = float(fslide)
 
+        # ---- Positional lag penalty (Gen2-05) ----
+        # If one foot stays positionally behind the other while the robot
+        # is moving forward, increment its lag counter. After LAG_TOLERANCE
+        # steps the penalty fires. Resets when the lagging foot catches up
+        # or the robot stops moving.
+        lag_penalty = 0.0
+        lf_x = self.data.site_xpos[self.left_foot_site_id][0]
+        rf_x = self.data.site_xpos[self.right_foot_site_id][0]
+        if forward_velocity > 0.1:
+            if lf_x < rf_x:   # left foot is behind
+                self.left_foot_lag_steps  += 1
+                self.right_foot_lag_steps  = 0
+            elif rf_x < lf_x:  # right foot is behind
+                self.right_foot_lag_steps += 1
+                self.left_foot_lag_steps   = 0
+            else:
+                self.left_foot_lag_steps  = 0
+                self.right_foot_lag_steps = 0
+
+            lag_steps = max(self.left_foot_lag_steps, self.right_foot_lag_steps)
+            if lag_steps > self.LAG_TOLERANCE:
+                lag_penalty = max(self.LAG_PENALTY * (lag_steps - self.LAG_TOLERANCE), -20.0)
+        else:
+            self.left_foot_lag_steps  = 0
+            self.right_foot_lag_steps = 0
+
+        gait_reward += lag_penalty
+        info['gait_reward/positional_lag_penalty'] = float(lag_penalty)
+
         # ---- Push-off reward (Gen2-07) ----
         # Rewards ankle plantarflexion (ankle_y going negative = toes pushing down)
-        # at the moment of toe-off for each foot.
-        # Guard conditions prevent hop/jump exploitation:
+        # at toe-off. Guard conditions prevent hop/jump exploitation:
         #   - Only fires during single support (opposite foot must be planted)
-        #   - Only fires when forward_velocity > 0.1 m/s (no reward for rocking)
-        # Result: right leg must actively push off with left foot planted, and
-        # left leg must actively push off with right foot planted.
+        #   - Only fires when forward_velocity > 0.1 m/s
         push_off_rew = 0.0
         if forward_velocity > 0.1:
             # Right leg push-off: left foot planted, right foot leaving
             if left_contact and not right_contact:
-                ayr_vel = self.data.qvel[self.ankle_y_right_idx - 7]  # ankle_y_right velocity
-                if ayr_vel < 0:   # negative = plantarflexion = pushing off
+                ayr_vel = self.data.qvel[self.ankle_y_right_idx - 7]
+                if ayr_vel < 0:
                     push_off_rew += self.push_off_weight * min(abs(ayr_vel), 2.0)
-
             # Left leg push-off: right foot planted, left foot leaving
             elif right_contact and not left_contact:
-                ayl_vel = self.data.qvel[self.ankle_y_left_idx - 7]   # ankle_y_left velocity
-                if ayl_vel < 0:   # negative = plantarflexion = pushing off
+                ayl_vel = self.data.qvel[self.ankle_y_left_idx - 7]
+                if ayl_vel < 0:
                     push_off_rew += self.push_off_weight * min(abs(ayl_vel), 2.0)
 
         gait_reward += push_off_rew
@@ -926,11 +989,13 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
 
             # Joint constraints (initialised; overwritten below)
             'joint_constraints/total_penalty':  0.0,
+            'joint_constraints/progress_scale': 0.0,
             'joint_constraints/shoulder1_penalty':0.0,
             'joint_constraints/shoulder2_penalty':0.0,
             'joint_constraints/elbow_penalty':   0.0,
             'joint_constraints/ankle_y_penalty': 0.0,
             'joint_constraints/ankle_x_penalty': 0.0,
+            'joint_constraints/hip_z_penalty':   0.0,
             'joint_constraints/shoulder1_right': 0.0,
             'joint_constraints/shoulder1_left':  0.0,
             'joint_constraints/shoulder2_right': 0.0,
@@ -941,7 +1006,44 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'joint_constraints/ankle_y_left':    0.0,
             'joint_constraints/ankle_x_right':   0.0,
             'joint_constraints/ankle_x_left':    0.0,
+            'joint_constraints/hip_z_right':     0.0,
+            'joint_constraints/hip_z_left':      0.0,
             'joint_constraints/abdomen_penalty': 0.0,
+            'joint_constraints/abdomen_x':       0.0,
+            'joint_constraints/abdomen_y':       0.0,
+            'joint_constraints/abdomen_z':       0.0,
+
+            # Gait rewards (initialised; overwritten by gait_info below)
+            'gait_reward/alternation_reward':      0.0,
+            'gait_reward/step_frequency_reward':   0.0,
+            'gait_reward/stride_length_reward':    0.0,
+            'gait_reward/static_standing_penalty': 0.0,
+            'gait_reward/contact_pattern_rew':     0.0,
+            'gait_reward/wide_stance_penalty':     0.0,
+            'gait_reward/narrow_stance_penalty':   0.0,
+            'gait_reward/clearance_rew':           0.0,
+            'gait_reward/com_smoothness_pen':      0.0,
+            'gait_reward/orientation_pen':         0.0,
+            'gait_reward/torso_rotation_pen':      0.0,
+            'gait_reward/foot_slide_pen':          0.0,
+            'gait_reward/positional_lag_penalty':  0.0,
+            'gait_reward/push_off_reward':         0.0,
+
+            # Env metrics (foot heights and contact states emitted by gait_info; defaults as safety net)
+            'env_metrics/left_foot_height':  0.0,
+            'env_metrics/right_foot_height': 0.0,
+            'env_metrics/left_contact':      0.0,
+            'env_metrics/right_contact':     0.0,
+            'env_metrics/no_contact':        0.0,
+            'env_metrics/both_contact':      0.0,
+            'env_metrics/single_support':    0.0,
+
+            # Arm swing (initialised; overwritten by arm_swing_info below)
+            'arm_swing/movement_reward':    0.0,
+            'arm_swing/coordination_reward':0.0,
+            'arm_swing/total_reward':       0.0,
+            'arm_swing/shoulder1_right':    0.0,
+            'arm_swing/shoulder1_left':     0.0,
         }
 
         # Merge sub-dicts
