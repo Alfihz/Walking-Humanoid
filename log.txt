@@ -20,3 +20,6 @@ Gen 2 - 06 (TQC06): Humanoid is not falling. Foot is not straight but legs are s
 Gen 2 - 07 (TQC07): Humanoid is not falling. Left leg is still using more force than the right leg. Left foot is twitching a lot due to the left leg being more active.
     Fix: Implement GRF Symmetry. Both legs have to exert the same amount of force or similar or else a penalty will be given.
 
+Gen 2 - 08 (TQC08): Humanoid is not falling. Same issue as previous. The legs are not alternating properly and right leg is still stiff. GRF implementation did not work.
+    Fix: Remove GRF Symmetry and add a new anti-phase for hip_y. This makes it so hip_y for both left and right has to be anti-phase or opposite of each other.
+
