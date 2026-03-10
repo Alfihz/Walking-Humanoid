@@ -15,4 +15,8 @@ Gen 2 - 05 (TQC05): Humanoid is not falling. We found out that the reason the fo
     Fix: Add penalty and constraint on hip_z so it does not turn the foot inwards/outwards. We are going to fix the foot facing inwards first. We will continue with the right leg stiffness in the next version.
     
 Gen 2 - 06 (TQC06): Humanoid is not falling. Foot is not straight but legs are still not alternating.
-    Fix: To force legs to alternate, we introduced a push off toe reward based on the plantarflexes.    
+    Fix: To force legs to alternate, we introduced a push off toe reward based on the plantarflexes.
+
+Gen 2 - 07 (TQC07): Humanoid is not falling. Left leg is still using more force than the right leg. Left foot is twitching a lot due to the left leg being more active.
+    Fix: Implement GRF Symmetry. Both legs have to exert the same amount of force or similar or else a penalty will be given.
+

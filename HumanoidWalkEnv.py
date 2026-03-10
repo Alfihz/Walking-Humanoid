@@ -1,23 +1,25 @@
 """
-HumanoidWalkEnv Gen2-07 - PUSH-OFF REWARD
-==========================================
-Based on Gen2-06 with one targeted fix:
+HumanoidWalkEnv Gen2-08 - GRF SYMMETRY PENALTY
+===============================================
+Based on Gen2-07 with one targeted fix:
 
-FIX (Gen2-07):
-- Push-off reward: rewards ankle plantarflexion at toe-off
-    * Weight: 6.0, capped at 2.0 rad/s
-    * Guard 1: only fires during single support (opposite foot planted)
-    * Guard 2: only fires when forward_velocity > 0.1 m/s
-    * New metric: gait_reward/push_off_reward
+FIX (Gen2-08):
+- GRF symmetry penalty: compares each leg's avg touch sensor force
+  during its own single-support stance phase.
+    * Tracks rolling window (50 steps) of left/right stance forces separately
+    * Normalized asymmetry ratio: |L-R|/(L+R), 0=equal, 1=one-sided
+    * Penalty weight: 4.0, capped at -15 to prevent training collapse
+    * Gated on forward_velocity > 0.1 (no penalty when standing still)
+    * New metrics: grf_symmetry_penalty, left_stance_force_avg, right_stance_force_avg
+
+FIX (Gen2-07 — preserved):
+- Push-off reward: weight 6.0, capped at 2.0 rad/s, single-support gated
 
 FIX (Gen2-06 — preserved):
 - Hip Z deadband constraint: weight 4.0, deadband ±0.10 rad (±6°)
-    * hip_z controls foot direction (not ankle_x as previously assumed)
-    * Applied AFTER curriculum scaling — always full strength
 
 FIX (Gen2-05 — preserved):
-- Positional lag penalty: forces leg alternation
-    * LAG_TOLERANCE=45 steps, LAG_PENALTY=-8.0/step, capped at -20
+- Positional lag penalty: LAG_TOLERANCE=45, LAG_PENALTY=-8.0, cap -20
 
 FIX (Gen2-03 — preserved):
 - Ankle X weight 3.0, deadband ±0.10 rad (±6°)
@@ -42,7 +44,8 @@ BAKED-IN LESSONS FROM V17-V26:
 - Balance reward floor must not be too negative (was -20, now -5)
 - camera_name="track" must exist in XML (not just "back"/"side")
 
-METRICS: 79 metrics across 9 groups
+METRICS: 82 metrics (79 from Gen2-07 + 3 new: grf_symmetry_penalty,
+         left_stance_force_avg, right_stance_force_avg)
 """
 
 from gymnasium import spaces
@@ -117,7 +120,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-07 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-08 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -204,6 +207,14 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Rewards ankle plantarflexion at toe-off during single support.
         self.push_off_weight = 6.0
 
+        # --- GRF symmetry penalty (Gen2-08) ------------------------------
+        # Tracks each leg's avg touch sensor force during its own single-
+        # support stance, then penalizes asymmetry between the two legs.
+        # Window: last N single-support readings per leg.
+        # Penalty = normalized asymmetry ratio * weight, capped at -15.
+        self.grf_symmetry_weight  = 4.0
+        self.grf_window_size      = 50   # steps to average per leg
+
         # --- Clearance ---------------------------------------------------
         self.min_clearance_height = 0.08  # 8 cm minimum swing clearance
 
@@ -239,6 +250,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.path_deviation_history = []
         self.left_foot_lag_steps  = 0   # Gen2-05: positional lag counter
         self.right_foot_lag_steps = 0
+        self.left_stance_forces   = []  # Gen2-08: rolling GRF during left single support
+        self.right_stance_forces  = []  # Gen2-08: rolling GRF during right single support
 
     # ------------------------------------------------------------------ #
     #  CURRICULUM CONTROL                                                 #
@@ -303,6 +316,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.episode_start_y        = self.data.qpos[1]
         self.left_foot_lag_steps    = 0   # Gen2-05: positional lag counters
         self.right_foot_lag_steps   = 0
+        self.left_stance_forces     = []  # Gen2-08: GRF rolling histories
+        self.right_stance_forces    = []
 
         # Reset any timestep-local counters
         for attr in ('airborne_duration', 'double_support_duration',
@@ -794,6 +809,41 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         gait_reward += push_off_rew
         info['gait_reward/push_off_reward'] = float(push_off_rew)
 
+        # ---- GRF symmetry penalty (Gen2-08) ----
+        # During left single support: record left foot sensor force.
+        # During right single support: record right foot sensor force.
+        # Compare rolling averages of the two — penalize asymmetry.
+        # Normalized ratio: 0 = perfectly equal, 1 = completely one-sided.
+        # Gated on forward_velocity > 0.1 to avoid penalising standing still.
+        grf_sym_pen = 0.0
+        left_force  = float(self.data.sensordata[self.left_touch_sensor_adr])
+        right_force = float(self.data.sensordata[self.right_touch_sensor_adr])
+
+        if forward_velocity > 0.1:
+            # Record each foot's force only during its own single-support phase
+            if left_contact and not right_contact:
+                self.left_stance_forces.append(left_force)
+                if len(self.left_stance_forces) > self.grf_window_size:
+                    self.left_stance_forces.pop(0)
+            elif right_contact and not left_contact:
+                self.right_stance_forces.append(right_force)
+                if len(self.right_stance_forces) > self.grf_window_size:
+                    self.right_stance_forces.pop(0)
+
+            # Only compare once both windows have enough data
+            if len(self.left_stance_forces) >= 10 and len(self.right_stance_forces) >= 10:
+                avg_left  = float(np.mean(self.left_stance_forces))
+                avg_right = float(np.mean(self.right_stance_forces))
+                total_force = avg_left + avg_right + 1e-6  # avoid div/0
+                asymmetry = abs(avg_left - avg_right) / total_force  # 0..1
+                raw_pen = -self.grf_symmetry_weight * asymmetry
+                grf_sym_pen = max(raw_pen, -15.0)  # cap to prevent collapse
+
+        gait_reward += grf_sym_pen
+        info['gait_reward/grf_symmetry_penalty']  = float(grf_sym_pen)
+        info['gait_reward/left_stance_force_avg'] = float(np.mean(self.left_stance_forces))  if self.left_stance_forces  else 0.0
+        info['gait_reward/right_stance_force_avg']= float(np.mean(self.right_stance_forces)) if self.right_stance_forces else 0.0
+
         # Update last contacts
         self.last_left_contact  = left_contact
         self.last_right_contact = right_contact
@@ -1028,6 +1078,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'gait_reward/foot_slide_pen':          0.0,
             'gait_reward/positional_lag_penalty':  0.0,
             'gait_reward/push_off_reward':         0.0,
+            'gait_reward/grf_symmetry_penalty':    0.0,   # Gen2-08
+            'gait_reward/left_stance_force_avg':   0.0,   # Gen2-08
+            'gait_reward/right_stance_force_avg':  0.0,   # Gen2-08
 
             # Env metrics (foot heights and contact states emitted by gait_info; defaults as safety net)
             'env_metrics/left_foot_height':  0.0,
