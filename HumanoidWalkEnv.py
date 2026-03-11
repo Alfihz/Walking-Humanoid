@@ -1,9 +1,39 @@
 """
-HumanoidWalkEnv Gen2-10 - HIP Y EXCURSION PENALTY
-===================================================
-Based on Gen2-09 with one targeted fix:
+HumanoidWalkEnv Gen2-11 - QVEL INDEX BUG FIXES (LEFT-LEG DOMINANCE ROOT CAUSE)
+================================================================================
+Based on Gen2-10 with three targeted fixes.
 
-FIX (Gen2-10):
+All three bugs shared the same root cause: qvel was indexed as `qpos_idx - 7`
+instead of the correct `qpos_idx - 1`. The freejoint contributes 7 entries to
+qpos but only 6 to qvel, so for any hinge joint: qvel[i] = qpos[i+1] — i.e.
+the offset is -1, not -7. The XML also contains neck_y/neck_x joints at
+qpos[22-23] between the legs and arms, which the code did not account for.
+
+FIX 1 (Gen2-11) — Arm swing velocity indices (Bug: reads left leg joints):
+    BEFORE: qvel[shoulder1_right_idx - 7] = qvel[17] = hip_y_LEFT velocity
+            qvel[shoulder1_left_idx  - 7] = qvel[20] = ankle_x_LEFT velocity
+    AFTER:  qvel[shoulder1_right_idx - 1] = qvel[23] = shoulder1_right velocity
+            qvel[shoulder1_left_idx  - 1] = qvel[26] = shoulder1_left velocity
+    Effect: arm_movement reward was rewarding left leg activity every step.
+            Right leg earned nothing. Direct cause of left-leg dominance.
+
+FIX 2 (Gen2-11) — Push-off velocity indices (Bug: cross-reads wrong ankle):
+    BEFORE: ayr_vel = qvel[ankle_y_right_idx - 7] = qvel[7]  = abdomen_y vel
+            ayl_vel = qvel[ankle_y_left_idx  - 7] = qvel[13] = ankle_y_RIGHT vel
+    AFTER:  ayr_vel = qvel[ankle_y_right_idx - 1] = qvel[13] = ankle_y_right vel
+            ayl_vel = qvel[ankle_y_left_idx  - 1] = qvel[19] = ankle_y_left vel
+    Effect: right push-off read abdomen (useless), left push-off read right ankle.
+            Only right ankle push-off was ever rewarded — drove leftward lean.
+
+FIX 3 (Gen2-11) — arm_pos / arm_vel slices (Bug: includes neck, cuts left arm):
+    BEFORE: qpos[22:28] = neck_y, neck_x, s1r, s2r, elbow_r, s1l  (misses s2l, elbow_l)
+            qvel[21:27] = neck_y, neck_x, s1r, s2r, elbow_r, s1l  (misses s2l, elbow_l)
+    AFTER:  qpos[24:30] = s1r, s2r, elbow_r, s1l, s2l, elbow_l    (all 6 arm joints)
+            qvel[23:29] = s1r, s2r, elbow_r, s1l, s2l, elbow_l    (all 6 arm joints)
+    Effect: right arm all 3 joints penalised; left arm only 1 joint penalised.
+            Also neck joints were incorrectly receiving arm penalties.
+
+FIX (Gen2-10 — preserved):
 - Removed hip_y anti-phase penalty (Gen2-09) — could not detect passive leg.
 - Added hip_y independent excursion penalty:
     * Tracks a rolling window (80 steps) of hip_y angle for each leg
@@ -125,7 +155,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-10 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-11 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -494,8 +524,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
 
         s1r     = self.data.qpos[self.shoulder1_right_idx]
         s1l     = self.data.qpos[self.shoulder1_left_idx]
-        s1r_vel = self.data.qvel[self.shoulder1_right_idx - 7]
-        s1l_vel = self.data.qvel[self.shoulder1_left_idx  - 7]
+        # Gen2-11 FIX 1: correct offset is -1 (freejoint: 7 qpos / 6 qvel)
+        # -7 was reading hip_y_left and ankle_x_left instead of the arm joints
+        s1r_vel = self.data.qvel[self.shoulder1_right_idx - 1]
+        s1l_vel = self.data.qvel[self.shoulder1_left_idx  - 1]
 
         # Reward any arm movement
         arm_movement   = abs(s1r_vel) + abs(s1l_vel)
@@ -805,12 +837,16 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         if forward_velocity > 0.1:
             # Right leg push-off: left foot planted, right foot leaving
             if left_contact and not right_contact:
-                ayr_vel = self.data.qvel[self.ankle_y_right_idx - 7]
+                # Gen2-11 FIX 2: correct offset is -1
+                # -7 was reading abdomen_y instead of ankle_y_right
+                ayr_vel = self.data.qvel[self.ankle_y_right_idx - 1]
                 if ayr_vel < 0:
                     push_off_rew += self.push_off_weight * min(abs(ayr_vel), 2.0)
             # Left leg push-off: right foot planted, left foot leaving
             elif right_contact and not left_contact:
-                ayl_vel = self.data.qvel[self.ankle_y_left_idx - 7]
+                # Gen2-11 FIX 2: correct offset is -1
+                # -7 was reading ankle_y_right instead of ankle_y_left
+                ayl_vel = self.data.qvel[self.ankle_y_left_idx - 1]
                 if ayl_vel < 0:
                     push_off_rew += self.push_off_weight * min(abs(ayl_vel), 2.0)
 
@@ -926,8 +962,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         hip_stab_pen    = -2.0 * pelvis_lat_vel ** 2
 
         # --- Arm positions ---
-        arm_pos         = self.data.qpos[22:28]
-        arm_vel         = self.data.qvel[21:27]
+        # Gen2-11 FIX 3: correct slice to cover all 6 arm joints only.
+        # qpos[22:28] was including neck_y/neck_x and missing shoulder2_left + elbow_left.
+        arm_pos         = self.data.qpos[24:30]   # s1r, s2r, elbow_r, s1l, s2l, elbow_l
+        arm_vel         = self.data.qvel[23:29]   # same joints' velocities
         arm_flail_pen   = float(-self.arm_penalty_weight * np.sum(arm_vel ** 2))
         arm_pos_pen     = float(-0.05  * np.sum(arm_pos ** 2))
 

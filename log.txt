@@ -25,3 +25,6 @@ Gen 2 - 08 (TQC08): Humanoid is not falling. Same issue as previous. The legs ar
 
 Gen 2 - 09 (TQC09): Humanoid is falling. Anti-phase made the humanoid worse. It does not solve the leg issue.
     Fix: Remove Anti-phase and implemented hip_y excursion. This tracks each legs independently and see its angle changes over time.
+
+Gen 2 - 10 (TQC10): Humanoid is not falling. The anti-phase worked but we can still see that the left leg is more active than right. I checked and was right that some of the code was wrong. They were using the wrong joint.
+    Fix: Fix wrong joints. This will hopefully make both sides more balanced.
