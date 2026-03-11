@@ -136,8 +136,8 @@ INFO_KEYWORDS = (
     'arm_swing/movement_reward',
     'arm_swing/coordination_reward',
     'arm_swing/total_reward',
-    'arm_swing/shoulder1_right',
-    'arm_swing/shoulder1_left',
+    'arm_swing/shoulder2_right',
+    'arm_swing/shoulder2_left',
 )
 
 
