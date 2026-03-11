@@ -35,7 +35,7 @@ LOAD_MODEL_PATH = None
 AUTO_INCREMENT_DIRS = True
 
 # ============================================================================
-# INFO_KEYWORDS - MUST MATCH Gen2-09 METRIC NAMES EXACTLY
+# INFO_KEYWORDS - MUST MATCH Gen2-10 METRIC NAMES EXACTLY
 # Total: 82 metrics across 9 groups
 # ============================================================================
 INFO_KEYWORDS = (
@@ -102,9 +102,9 @@ INFO_KEYWORDS = (
     'gait_reward/foot_slide_pen',
     'gait_reward/positional_lag_penalty',   # Gen2-05
     'gait_reward/push_off_reward',          # Gen2-07
-    'gait_reward/hip_y_antiphase_pen',      # Gen2-09
-    'gait_reward/hip_y_right',              # Gen2-09
-    'gait_reward/hip_y_left',               # Gen2-09
+    'gait_reward/hip_y_excursion_pen',      # Gen2-10
+    'gait_reward/hip_y_excursion_right',    # Gen2-10
+    'gait_reward/hip_y_excursion_left',     # Gen2-10
 
     # ── Joint constraints (24) ────────────────────────────────────────────
     'joint_constraints/total_penalty',

@@ -1,19 +1,21 @@
 """
-HumanoidWalkEnv Gen2-09 - HIP Y ANTI-PHASE PENALTY
-====================================================
-Based on Gen2-08 with one targeted fix:
+HumanoidWalkEnv Gen2-10 - HIP Y EXCURSION PENALTY
+===================================================
+Based on Gen2-09 with one targeted fix:
 
-FIX (Gen2-09):
-- Removed GRF symmetry penalty (Gen2-08) — did not affect behaviour.
-- Added hip_y anti-phase penalty:
-    * During normal walking, hip_y_right + hip_y_left ≈ 0 (one forward,
-      one back). When both legs swing in the same direction (passive/sync),
-      their sum deviates from zero.
-    * Formula: -weight * (hip_y_right + hip_y_left)^2, capped at -15
-    * Weight: 5.0
-    * Gated on forward_velocity > 0.1
-    * hip_y convention: negative = leg forward, positive = leg backward
-    * New metrics: hip_y_antiphase_pen, hip_y_right, hip_y_left
+FIX (Gen2-10):
+- Removed hip_y anti-phase penalty (Gen2-09) — could not detect passive leg.
+- Added hip_y independent excursion penalty:
+    * Tracks a rolling window (80 steps) of hip_y angle for each leg
+      separately. Computes each leg's range-of-motion: max - min.
+    * If either leg's ROM falls below the minimum threshold (0.20 rad),
+      penalises that leg proportionally to the shortfall.
+    * Formula: -weight * (shortfall_right + shortfall_left), capped at -15
+    * Weight: 5.0, min_excursion: 0.20 rad (~11°)
+    * Gated on forward_velocity > 0.1 and window >= 20 samples
+    * Targets passivity directly: a leg sitting at zero gets max shortfall
+    * New metrics: hip_y_excursion_pen, hip_y_excursion_right,
+                   hip_y_excursion_left
 
 FIX (Gen2-07 — preserved):
 - Push-off reward: weight 6.0, capped at 2.0 rad/s, single-support gated
@@ -47,8 +49,8 @@ BAKED-IN LESSONS FROM V17-V26:
 - Balance reward floor must not be too negative (was -20, now -5)
 - camera_name="track" must exist in XML (not just "back"/"side")
 
-METRICS: 82 metrics (79 from Gen2-07 + 3 new: hip_y_antiphase_pen,
-         hip_y_right, hip_y_left)
+METRICS: 82 metrics (79 from Gen2-07 + 3 new: hip_y_excursion_pen,
+         hip_y_excursion_right, hip_y_excursion_left)
 """
 
 from gymnasium import spaces
@@ -123,7 +125,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-09 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-10 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -210,13 +212,14 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Rewards ankle plantarflexion at toe-off during single support.
         self.push_off_weight = 6.0
 
-        # --- Hip Y anti-phase penalty (Gen2-09) --------------------------
-        # hip_y_right + hip_y_left should be near zero during walking
-        # (one leg forward = other leg back). Penalises when both legs
-        # swing in the same direction (passive/sync behaviour).
-        # Formula: -weight * (hip_y_right + hip_y_left)^2, capped at -15.
-        # Gated on forward_velocity > 0.1.
-        self.hip_y_antiphase_weight = 5.0
+        # --- Hip Y excursion penalty (Gen2-10) ---------------------------
+        # Each leg must independently achieve a minimum range-of-motion
+        # per stride. Tracks rolling window of hip_y per leg; penalises
+        # any leg whose ROM (max-min) falls below the threshold.
+        # A completely passive leg (near zero) gets the maximum shortfall.
+        self.hip_y_excursion_weight  = 5.0
+        self.hip_y_min_excursion     = 0.20   # rad (~11°) minimum ROM per leg
+        self.hip_y_history_size      = 80     # steps (~2 strides at 0.5 m/s)
 
         # --- Clearance ---------------------------------------------------
         self.min_clearance_height = 0.08  # 8 cm minimum swing clearance
@@ -255,6 +258,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.path_deviation_history = []
         self.left_foot_lag_steps  = 0   # Gen2-05: positional lag counter
         self.right_foot_lag_steps = 0
+        self.hip_y_right_history  = []  # Gen2-10: rolling ROM window per leg
+        self.hip_y_left_history   = []
 
     # ------------------------------------------------------------------ #
     #  CURRICULUM CONTROL                                                 #
@@ -319,6 +324,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.episode_start_y        = self.data.qpos[1]
         self.left_foot_lag_steps    = 0   # Gen2-05: positional lag counters
         self.right_foot_lag_steps   = 0
+        self.hip_y_right_history    = []  # Gen2-10: rolling ROM windows
+        self.hip_y_left_history     = []
 
         # Reset any timestep-local counters
         for attr in ('airborne_duration', 'double_support_duration',
@@ -810,25 +817,38 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         gait_reward += push_off_rew
         info['gait_reward/push_off_reward'] = float(push_off_rew)
 
-        # ---- Hip Y anti-phase penalty (Gen2-09) ----
-        # During normal walking, hip_y_right and hip_y_left should be
-        # in anti-phase: one leg forward (negative) while the other is
-        # back (positive). Their sum should be near zero.
-        # When both swing in the same direction (passive/sync), sum >> 0.
-        # Formula: -weight * (hip_y_right + hip_y_left)^2, capped at -15.
-        # Gated on forward_velocity > 0.1 to avoid disturbing standing balance.
-        hip_y_antiphase_pen = 0.0
-        if forward_velocity > 0.1:
-            hy_r = self.data.qpos[self.hip_y_right_idx]
-            hy_l = self.data.qpos[self.hip_y_left_idx]
-            sync  = hy_r + hy_l   # near 0 = anti-phase, far from 0 = in-sync
-            raw_pen = -self.hip_y_antiphase_weight * (sync ** 2)
-            hip_y_antiphase_pen = max(raw_pen, -15.0)
+        # ---- Hip Y excursion penalty (Gen2-10) ----
+        # Track each leg's hip_y angle in a rolling window. Compute each
+        # leg's ROM independently (max - min over the window). If either
+        # leg's ROM is below the minimum threshold, penalise proportionally
+        # to the shortfall. A completely passive leg (stuck near 0) has
+        # excursion ≈ 0, giving shortfall = min_excursion = maximum penalty.
+        # Both legs are evaluated symmetrically — no L/R bias.
+        hy_r = float(self.data.qpos[self.hip_y_right_idx])
+        hy_l = float(self.data.qpos[self.hip_y_left_idx])
 
-        gait_reward += hip_y_antiphase_pen
-        info['gait_reward/hip_y_antiphase_pen'] = float(hip_y_antiphase_pen)
-        info['gait_reward/hip_y_right']         = float(self.data.qpos[self.hip_y_right_idx])
-        info['gait_reward/hip_y_left']          = float(self.data.qpos[self.hip_y_left_idx])
+        self.hip_y_right_history.append(hy_r)
+        self.hip_y_left_history.append(hy_l)
+        if len(self.hip_y_right_history) > self.hip_y_history_size:
+            self.hip_y_right_history.pop(0)
+        if len(self.hip_y_left_history) > self.hip_y_history_size:
+            self.hip_y_left_history.pop(0)
+
+        excursion_pen = 0.0
+        excursion_r   = 0.0
+        excursion_l   = 0.0
+        if forward_velocity > 0.1 and len(self.hip_y_right_history) >= 20:
+            excursion_r = max(self.hip_y_right_history) - min(self.hip_y_right_history)
+            excursion_l = max(self.hip_y_left_history)  - min(self.hip_y_left_history)
+            shortfall_r = max(0.0, self.hip_y_min_excursion - excursion_r)
+            shortfall_l = max(0.0, self.hip_y_min_excursion - excursion_l)
+            raw_pen     = -self.hip_y_excursion_weight * (shortfall_r + shortfall_l)
+            excursion_pen = max(raw_pen, -15.0)
+
+        gait_reward += excursion_pen
+        info['gait_reward/hip_y_excursion_pen']   = float(excursion_pen)
+        info['gait_reward/hip_y_excursion_right']  = float(excursion_r)
+        info['gait_reward/hip_y_excursion_left']   = float(excursion_l)
 
         # Update last contacts
         self.last_left_contact  = left_contact
@@ -1064,9 +1084,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'gait_reward/foot_slide_pen':          0.0,
             'gait_reward/positional_lag_penalty':  0.0,
             'gait_reward/push_off_reward':         0.0,
-            'gait_reward/hip_y_antiphase_pen':     0.0,   # Gen2-09
-            'gait_reward/hip_y_right':             0.0,   # Gen2-09
-            'gait_reward/hip_y_left':              0.0,   # Gen2-09
+            'gait_reward/hip_y_excursion_pen':     0.0,   # Gen2-10
+            'gait_reward/hip_y_excursion_right':   0.0,   # Gen2-10
+            'gait_reward/hip_y_excursion_left':    0.0,   # Gen2-10
 
             # Env metrics (foot heights and contact states emitted by gait_info; defaults as safety net)
             'env_metrics/left_foot_height':  0.0,
