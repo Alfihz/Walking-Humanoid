@@ -28,10 +28,3 @@ Gen 2 - 09 (TQC09): Humanoid is falling. Anti-phase made the humanoid worse. It 
 
 Gen 2 - 10 (TQC10): Humanoid is not falling. The anti-phase worked but we can still see that the left leg is more active than right. I checked and was right that some of the code was wrong. They were using the wrong joint.
     Fix: Fix wrong joints. This will hopefully make both sides more balanced.
-
-Gen 2 - 11 (TQC11): Humanoid is not falling. The joints were slightly wrong and this caused a limp to the right side of the humanoid.
-    Fix: Shoulder's were wrong. Used shoulder_1 instead of shoulder_2. Now we are using shoulder_2 and the angle ranges are also fixed.
-
-Gen 2 - 12 (TQC12): Humanoid is not falling. We coded the wrong shoulder joints. Shoulder_1 was the right one. Arms were waving.
-    Fix: Correct the shoulders and added more range for shoulder_1.
-
