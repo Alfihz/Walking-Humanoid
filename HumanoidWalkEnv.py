@@ -1,7 +1,17 @@
 """
-HumanoidWalkEnv Gen2-11 - QVEL INDEX BUG FIXES (LEFT-LEG DOMINANCE ROOT CAUSE)
-================================================================================
-Based on Gen2-10 with three targeted fixes.
+HumanoidWalkEnv Gen2-12 - LATERAL TILT PENALTY STRENGTHENED
+============================================================
+Based on Gen2-11 with one targeted fix.
+
+FIX (Gen2-12):
+- lateral_tilt_pen weight increased from 3.0 → 10.0.
+  Gen2-11 showed persistent rightward lean. The old penalty was too weak:
+  a 10° roll (0.17 rad) only produced -0.09 penalty — not enough to correct.
+  At 10.0 the same roll produces -0.29, giving the agent a much stronger
+  incentive to keep the torso upright laterally.
+  No joint indices, no reward logic changed — weight only.
+
+FIX (Gen2-11 — preserved):
 
 All three bugs shared the same root cause: qvel was indexed as `qpos_idx - 7`
 instead of the correct `qpos_idx - 1`. The freejoint contributes 7 entries to
@@ -155,7 +165,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-11 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-12 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -940,7 +950,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         torso_quat_w     = float(torso_quat[0])
         torso_roll       = 2.0 * np.arcsin(float(np.clip(torso_quat[1], -1.0, 1.0)))
         torso_pitch      = 2.0 * np.arcsin(float(np.clip(torso_quat[2], -1.0, 1.0)))
-        lateral_tilt_pen = -3.0 * torso_roll  ** 2
+        lateral_tilt_pen = -10.0 * torso_roll  ** 2   # Gen2-12: strengthened 3.0→10.0
         pitch_penalty    = -5.0 * torso_pitch ** 2
 
         # --- Upright bonus / penalty ---
