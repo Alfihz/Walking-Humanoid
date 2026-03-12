@@ -1,30 +1,46 @@
 """
-HumanoidWalkEnv Gen2-12 - ARM SWING AXIS FIX
-=============================================
-Based on Gen2-11 with one targeted fix.
+HumanoidWalkEnv Gen2-13 - ARM SWING FULL CORRECTION
+=====================================================
+Based on Gen2-12 with four arm-related fixes (all arm system, one version).
 
-FIX (Gen2-12) — Arm swing was using the wrong shoulder joint axis:
-    shoulder1 (axis 0,0,1 = vertical/Z) = LATERAL arm rotation (airplane wings)
-    shoulder2 (axis ±1,0,0 = X axis)    = FORWARD/BACKWARD arm swing (natural gait)
+AXIS ANALYSIS (verified from XML geometry):
+    upper_arm_right is at pos '0 -0.17 0' (right side, arm hangs in -Y).
+    shoulder1_right axis '0 0 1' (Z/vertical): rotating -Y arm around +Z swings
+    it forward (+X) or backward (-X). shoulder1 IS the walking pendulum axis. ✓
 
-    The arm swing movement reward and coordination reward were both referencing
-    shoulder1, which is the lateral axis. The agent learned to flap its arms
-    sideways because that earned reward — visible as airplane-wing posture and
-    lateral lean in Gen2-11.
+    upper_arm_left is at pos '0 +0.17 0' (left side, arm hangs in +Y).
+    shoulder1_left axis '0 0 1' (same Z): rotating +Y arm around +Z swings it
+    BACKWARD when positive, FORWARD when negative. Sign convention is OPPOSITE
+    to the right arm because the arms hang on opposite sides.
 
-    Three changes made (all arm-related):
-    1. Movement reward: switched from shoulder1 velocity to shoulder2 velocity.
-    2. Coordination reward: replaced shoulder1 position checks with shoulder2
-       velocity cross-sign detection. Because shoulder2_right axis=-1,0,0 and
-       shoulder2_left axis=+1,0,0 are OPPOSITE axes, natural arm swing produces
-       s2r_vel and s2l_vel with OPPOSITE signs. Reward = -s2r_vel * s2l_vel,
-       which is positive when arms swing in opposition and zero/negative when
-       they move together.
-    3. Shoulder2 constraint deadband widened from (-1.50, -1.25) rad to
-       (-0.4, +0.4) rad. The old range was AT or BEYOND the physical joint
-       limit of -1.484 rad (-85°), pinning arms at maximum backward extent.
-       New deadband allows ±23° of free swing — covering full natural walking
-       arm swing of ±20° (±0.35 rad) at 0.5 m/s.
+    shoulder2 controls arm ABDUCTION (raising/lowering from the side).
+    shoulder2 = 0 is rest (arms hanging at sides).
+
+FIX 1 (Gen2-13) — Revert arm movement reward to shoulder1 (correct axis):
+    Gen2-12 used shoulder2 (abduction/raising) — caused arms to raise up.
+    shoulder1 is the correct forward/backward swing axis for walking.
+
+FIX 2 (Gen2-13) — Fix coordination sign convention for left arm:
+    Gen2-11/12 checked s1l > 0.2 for "left arm forward" during right stance.
+    But shoulder1_left POSITIVE = arm BACKWARD (sign is flipped vs right arm).
+    Forward left arm = s1l < -0.1 (negative). All coordination signs corrected.
+    Also: right arm going backward (s1r < 0) is CORRECT during left-leg-forward
+    and should be rewarded, not penalised.
+
+FIX 3 (Gen2-13) — Widen shoulder1 constraint to allow backward swing:
+    Old free zone: 0..1 rad — penalised s1r < 0 (right arm backward), which
+    is the correct natural position during left-leg-forward stance. Removed
+    this incorrect penalty. New free zone: -0.5..+0.5 rad (±29°), symmetric,
+    covers natural ±0.35 rad swing with buffer.
+
+FIX 4 (Gen2-13) — Tighten shoulder2 constraint to prevent arm-raising:
+    Gen2-12 widened shoulder2 to ±0.4 rad (±23°) — too loose, caused visible
+    arm-raising in screenshots. Tightened to ±0.15 rad (±9°) to keep arms
+    at sides while allowing small natural shoulder movement.
+
+FIX (Gen2-12 — partially preserved):
+    Shoulder2 constraint deadband fix is kept (was ±0.4, now ±0.15).
+    Reversion of movement/coordination reward to shoulder1 replaces Gen2-12 changes 1 & 2.
 
 FIX (Gen2-11 — preserved):
 Based on Gen2-10 with three targeted fixes.
@@ -434,11 +450,20 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/abdomen_z']       = float(abd_z)
         info['joint_constraints/abdomen_penalty'] = float(abd_pen)
 
-        # Shoulder1 (arm swing — allow 0..1 range naturally)
+        # Shoulder1 (forward/backward arm swing — allow ±0.5 rad naturally)
+        # Gen2-13: widened from 0..1 to -0.5..+0.5 rad.
+        # Old range penalised s1r < 0 (right arm backward), but backward swing
+        # IS correct natural posture during left-leg-forward stance.
+        # New symmetric range ±0.5 rad (±29°) covers full natural swing (±0.35 rad).
+        # shoulder1_right: positive=forward, negative=backward.
+        # shoulder1_left:  negative=forward, positive=backward (sign convention flipped
+        #                  because left arm hangs in +Y, right arm in -Y from torax).
         s1r = qpos[self.shoulder1_right_idx]
         s1l = qpos[self.shoulder1_left_idx]
-        s1r_pen = 0.0 if 0.0 <= s1r <= 1.0 else -self.shoulder1_constraint_weight * (s1r if s1r < 0 else (s1r - 1.0)) ** 2
-        s1l_pen = 0.0 if 0.0 <= s1l <= 1.0 else -self.shoulder1_constraint_weight * (s1l if s1l < 0 else (s1l - 1.0)) ** 2
+        s1r_pen = 0.0 if -0.5 <= s1r <= 0.5 else -self.shoulder1_constraint_weight * (s1r + 0.5) ** 2 if s1r < -0.5 else \
+                  -self.shoulder1_constraint_weight * (s1r - 0.5) ** 2
+        s1l_pen = 0.0 if -0.5 <= s1l <= 0.5 else -self.shoulder1_constraint_weight * (s1l + 0.5) ** 2 if s1l < -0.5 else \
+                  -self.shoulder1_constraint_weight * (s1l - 0.5) ** 2
         s1_pen  = s1r_pen + s1l_pen
         total  += s1_pen
 
@@ -446,18 +471,17 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/shoulder1_left']    = float(s1l)
         info['joint_constraints/shoulder1_penalty'] = float(s1_pen)
 
-        # Shoulder2 (keep arms at sides: -1.5 to -1.25)
+        # Shoulder2 (arm abduction — keep arms at sides, allow only ±0.15 rad).
+        # Gen2-13: tightened from Gen2-12's ±0.4 rad to ±0.15 rad (±9°).
+        # shoulder2 = 0 is rest (arm hanging straight down from shoulder).
+        # ±0.4 rad allowed too much arm-raising, visible as arms up in screenshots.
+        # ±0.15 rad keeps arms close to sides while allowing small natural movement.
         s2r = qpos[self.shoulder2_right_idx]
         s2l = qpos[self.shoulder2_left_idx]
-        # Gen2-12: widened deadband from (-1.50, -1.25) to (-0.4, +0.4) rad.
-        # Old range was AT/BEYOND the physical joint limit (-1.484 rad = -85°),
-        # pinning arms at maximum backward extent — caused frozen arm posture.
-        # New deadband ±0.4 rad (±23°) covers full natural walking arm swing
-        # (±20° = ±0.35 rad at 0.5 m/s) with a small buffer.
-        s2r_pen = -self.shoulder2_constraint_weight * (s2r + 0.40) ** 2 if s2r < -0.40 else \
-                  -self.shoulder2_constraint_weight * (s2r - 0.40) ** 2 if s2r > +0.40 else 0.0
-        s2l_pen = -self.shoulder2_constraint_weight * (s2l + 0.40) ** 2 if s2l < -0.40 else \
-                  -self.shoulder2_constraint_weight * (s2l - 0.40) ** 2 if s2l > +0.40 else 0.0
+        s2r_pen = -self.shoulder2_constraint_weight * (s2r + 0.15) ** 2 if s2r < -0.15 else \
+                  -self.shoulder2_constraint_weight * (s2r - 0.15) ** 2 if s2r > +0.15 else 0.0
+        s2l_pen = -self.shoulder2_constraint_weight * (s2l + 0.15) ** 2 if s2l < -0.15 else \
+                  -self.shoulder2_constraint_weight * (s2l - 0.15) ** 2 if s2l > +0.15 else 0.0
         s2_pen  = s2r_pen + s2l_pen
         total  += s2_pen
 
@@ -553,32 +577,48 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info   = {}
         reward = 0.0
 
-        # Gen2-12: switch from shoulder1 (lateral/Z axis) to shoulder2 (forward/backward X axis).
-        # shoulder1 axis=0,0,1 is lateral rotation → airplane wings (WRONG for walking).
-        # shoulder2 axis=±1,0,0 is forward/backward swing → natural gait arm swing (CORRECT).
-        s2r     = self.data.qpos[self.shoulder2_right_idx]
-        s2l     = self.data.qpos[self.shoulder2_left_idx]
-        s2r_vel = self.data.qvel[self.shoulder2_right_idx - 1]  # qvel[24] = shoulder2_right vel
-        s2l_vel = self.data.qvel[self.shoulder2_left_idx  - 1]  # qvel[27] = shoulder2_left vel
+        # Gen2-13: reverted to shoulder1 (forward/backward pendulum axis).
+        # shoulder1_right: positive = arm forward, negative = arm backward.
+        # shoulder1_left:  negative = arm forward, positive = arm backward.
+        # (Sign convention is FLIPPED between sides because arms hang on opposite
+        #  sides of torax: right arm in -Y, left arm in +Y local direction.)
+        s1r     = self.data.qpos[self.shoulder1_right_idx]
+        s1l     = self.data.qpos[self.shoulder1_left_idx]
+        s1r_vel = self.data.qvel[self.shoulder1_right_idx - 1]  # qvel[23] = shoulder1_right vel
+        s1l_vel = self.data.qvel[self.shoulder1_left_idx  - 1]  # qvel[26] = shoulder1_left vel
 
-        # Reward forward/backward arm movement (shoulder2 axis)
-        arm_movement = abs(s2r_vel) + abs(s2l_vel)
+        # Reward forward/backward arm movement (shoulder1 = correct walking axis)
+        arm_movement = abs(s1r_vel) + abs(s1l_vel)
         movement_rew = self.arm_swing_reward_weight * min(arm_movement, 2.0)
         reward      += movement_rew
         info['arm_swing/movement_reward'] = float(movement_rew)
 
-        # Coordination: reward arms swinging in OPPOSITION.
-        # shoulder2_right axis=-1,0,0 and shoulder2_left axis=+1,0,0 are OPPOSITE axes,
-        # so natural forward/backward swing produces s2r_vel and s2l_vel with opposite signs.
-        # -s2r_vel * s2l_vel is positive when they oppose each other (natural gait),
-        # zero or negative when they move together (unnatural). Capped to avoid instability.
-        coord_raw = -s2r_vel * s2l_vel
-        coord_rew = self.arm_swing_coordination_weight * float(np.clip(coord_raw, -2.0, 2.0))
-        reward   += coord_rew
+        # Coordination: opposite arm-leg pattern during single support.
+        # Gen2-13: corrected sign convention for left arm.
+        #   Right stance (right foot down, left leg swinging forward):
+        #     Natural:  left arm forward  (s1l < -0.1, negative for left arm)
+        #               right arm backward (s1r < -0.1, negative for right arm)
+        #   Left stance (left foot down, right leg swinging forward):
+        #     Natural:  right arm forward  (s1r > +0.1, positive for right arm)
+        #               left arm backward  (s1l > +0.1, positive for left arm)
+        coord_rew = 0.0
+        if right_contact and not left_contact:     # Right stance
+            if s1l < -0.1:                          # Left arm forward ✓
+                coord_rew += 1.5 * abs(s1l)
+            if s1r < -0.1:                          # Right arm backward ✓
+                coord_rew += 0.5 * abs(s1r)
+        elif left_contact and not right_contact:   # Left stance
+            if s1r > 0.1:                           # Right arm forward ✓
+                coord_rew += 1.5 * s1r
+            if s1l > 0.1:                           # Left arm backward ✓
+                coord_rew += 0.5 * s1l
+
+        coord_rew *= self.arm_swing_coordination_weight
+        reward    += coord_rew
 
         info['arm_swing/coordination_reward'] = float(coord_rew)
-        info['arm_swing/shoulder2_right']     = float(s2r)
-        info['arm_swing/shoulder2_left']      = float(s2l)
+        info['arm_swing/shoulder1_right']     = float(s1r)
+        info['arm_swing/shoulder1_left']      = float(s1l)
         info['arm_swing/total_reward']        = float(reward)
 
         return reward, info
@@ -1160,8 +1200,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'arm_swing/movement_reward':    0.0,
             'arm_swing/coordination_reward':0.0,
             'arm_swing/total_reward':       0.0,
-            'arm_swing/shoulder2_right':    0.0,
-            'arm_swing/shoulder2_left':     0.0,
+            'arm_swing/shoulder1_right':    0.0,
+            'arm_swing/shoulder1_left':     0.0,
         }
 
         # Merge sub-dicts
