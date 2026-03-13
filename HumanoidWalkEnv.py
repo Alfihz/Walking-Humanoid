@@ -1,9 +1,22 @@
 """
-HumanoidWalkEnv Gen2-12 - LATERAL TILT PENALTY STRENGTHENED
-============================================================
-Based on Gen2-11 with one targeted fix.
+HumanoidWalkEnv Gen2-13 - SHOULDER1 CONSTRAINT WIDENED
+=======================================================
+Based on Gen2-12 with one targeted fix.
 
-FIX (Gen2-12):
+FIX (Gen2-13) — Shoulder1 free zone widened from 0..1 to ±0.5 rad:
+    TensorBoard from Gen2-12 showed shoulder1_left settling at ~1.05 rad
+    (just above the upper limit, continuously penalised) and shoulder1_right
+    at ~0.83 rad (pressed against the upper end of the free zone). Both arms
+    were pushed to sit as far forward as possible — root cause of airplane arms.
+
+    Old free zone: 0.0 to +1.0 rad — penalised any backward swing immediately.
+    New free zone: -0.5 to +0.5 rad (±29°) — symmetric, covers natural walking
+    arm swing of ±0.35 rad with a small buffer. Arms can now swing backward
+    naturally during opposite leg stance without penalty.
+
+    No reward logic changed. No joint indices changed. Constraint deadband only.
+
+FIX (Gen2-12 — preserved):
 - lateral_tilt_pen weight increased from 3.0 → 10.0.
   Gen2-11 showed persistent rightward lean. The old penalty was too weak:
   a 10° roll (0.17 rad) only produced -0.09 penalty — not enough to correct.
@@ -165,7 +178,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-12 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-13 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -418,11 +431,17 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/abdomen_z']       = float(abd_z)
         info['joint_constraints/abdomen_penalty'] = float(abd_pen)
 
-        # Shoulder1 (arm swing — allow 0..1 range naturally)
+        # Shoulder1 (arm swing — allow ±0.5 rad naturally)
+        # Gen2-13: widened from 0..1 to -0.5..+0.5 rad.
+        # Old range penalised all backward swing immediately, pushing arms to
+        # ~1.0 rad forward (airplane posture). New symmetric range ±0.5 rad
+        # (±29°) covers natural walking swing of ±0.35 rad with buffer.
         s1r = qpos[self.shoulder1_right_idx]
         s1l = qpos[self.shoulder1_left_idx]
-        s1r_pen = 0.0 if 0.0 <= s1r <= 1.0 else -self.shoulder1_constraint_weight * (s1r if s1r < 0 else (s1r - 1.0)) ** 2
-        s1l_pen = 0.0 if 0.0 <= s1l <= 1.0 else -self.shoulder1_constraint_weight * (s1l if s1l < 0 else (s1l - 1.0)) ** 2
+        s1r_pen = 0.0 if -0.5 <= s1r <= 0.5 else -self.shoulder1_constraint_weight * (s1r + 0.5) ** 2 if s1r < -0.5 else \
+                  -self.shoulder1_constraint_weight * (s1r - 0.5) ** 2
+        s1l_pen = 0.0 if -0.5 <= s1l <= 0.5 else -self.shoulder1_constraint_weight * (s1l + 0.5) ** 2 if s1l < -0.5 else \
+                  -self.shoulder1_constraint_weight * (s1l - 0.5) ** 2
         s1_pen  = s1r_pen + s1l_pen
         total  += s1_pen
 

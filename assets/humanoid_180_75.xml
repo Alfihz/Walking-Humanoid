@@ -191,6 +191,10 @@
       <!-- Head (Child of Torax) -->
       <body name="head" pos="0 0 .290"> <!-- Relative to torax -->
           <geom name="head" type="sphere" size=".110"/>
+          <!-- Face features on +X (forward) side of head — visual only, no mass/collision -->
+          <geom name="eye_right" type="sphere" size=".022" pos=".090 -.042 .025"  rgba="0.1 0.1 0.1 1" contype="0" conaffinity="0" mass="0"/>
+          <geom name="eye_left"  type="sphere" size=".022" pos=".090  .042 .025"  rgba="0.1 0.1 0.1 1" contype="0" conaffinity="0" mass="0"/>
+          <geom name="nose"      type="sphere" size=".018" pos=".108  .000 -.018" rgba="0.75 0.45 0.2 1" contype="0" conaffinity="0" mass="0"/>
           <camera name="egocentric" pos=".09 0 0" xyaxes="0 -1 0 .1 0 1" fovy="80"/>
           <inertial pos="0 0 0" mass="5.6" diaginertia="0.027104 0.027104 0.027104"/>
           <!-- Neck Joints - Need to define connection TO torax -->

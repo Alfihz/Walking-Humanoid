@@ -29,5 +29,8 @@ Gen 2 - 09 (TQC09): Humanoid is falling. Anti-phase made the humanoid worse. It 
 Gen 2 - 10 (TQC10): Humanoid is not falling. The anti-phase worked but we can still see that the left leg is more active than right. I checked and was right that some of the code was wrong. They were using the wrong joint.
     Fix: Fix wrong joints. This will hopefully make both sides more balanced.
 
-Gen 2-11 (TQC11): We have reverted back from a different Gen 2-13. It started going wrong when we tried to change how the arm was behaving. The issue with the current Gen 2-11 is that the body is not upright and stable and also the arms are not properly straight. left arm goes behind.
+Gen 2 - 11 (TQC11): We have reverted back from a different Gen 2-13. It started going wrong when we tried to change how the arm was behaving. The issue with the current Gen 2-11 is that the body is not upright and stable and also the arms are not properly straight. left arm goes behind.
     Fix: We are fixing the posture first. We want the body to be straight and stable so we increased the lateral_tile_pen to -10 from -3.
+
+Gen 2 - 12 (TQC14): Improvement can be seen on the arms and torso, but there is still a slight right leaning body.
+    Fix: Updated the range for shoulder1 to be more stable.
