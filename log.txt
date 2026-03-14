@@ -37,3 +37,7 @@ Gen 2 - 12 (TQC14): Humanoid is not falling. Improvement can be seen on the arms
 
 Gen 2 - 13 (TQC15): Humanoid is not falling. Left arm is acting weird but right arm is fixed. Legs are getting better at alternating. Head is facing rowards bottom right since there is not constraint for this.
     Fix: We will fix the left arm first by fixing the rewarding the right coordinate it should be facing.
+
+Gen 2 - 14 (TQC16): Humanoid is not falling. Both arms are fixed and staying stable at each side. The humanoid is walking on the feet's heels and does not do a full feet contact. The head is also facing to right and looking up.
+    Fix: Add constraints to the neck so it will look forward instead of leaning to one side.
+    

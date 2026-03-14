@@ -1,9 +1,25 @@
 """
-HumanoidWalkEnv Gen2-14 - ARM COORDINATION SIGN FIX
-=====================================================
-Based on Gen2-13 with one targeted fix.
+HumanoidWalkEnv Gen2-15 - NECK CONSTRAINT ADDED
+================================================
+Based on Gen2-14 with one targeted fix.
 
-FIX (Gen2-14) — Arm coordination reward sign corrected for left arm:
+FIX (Gen2-15) — Neck deadband constraint added (neck_y and neck_x):
+    The humanoid's head was free to tilt in any direction, using it as a
+    counterweight for forward body lean and lateral imbalance. No position
+    constraint existed — only a weak angular velocity penalty (head_stab_pen)
+    which ignored where the head was pointing entirely.
+
+    Added deadband constraints on both neck joints (qpos[22] and qpos[23]):
+      neck_y (qpos[22]): controls forward/backward head tilt (nodding)
+      neck_x (qpos[23]): controls left/right head tilt (side lean)
+      Deadband: ±0.15 rad (≈±9°) — allows natural walking head movement
+      Weight: 2.0 — moderate, same order as abdomen constraints
+      Penalty outside deadband: -weight * excess²
+
+    New metrics: joint_constraints/neck_penalty, /neck_y, /neck_x
+    INFO_KEYWORDS in train_tqc.py updated with 3 new keys (total: 85).
+
+FIX (Gen2-14 — preserved) — Arm coordination reward sign corrected for left arm:
     shoulder1 axis is FLIPPED between arms (confirmed from XML):
       s1r positive = right arm physically FORWARD  ✓
       s1l positive = left arm physically BACKWARD  ← axis is mirrored
@@ -194,7 +210,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-14 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-15 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -240,6 +256,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.lateral_penalty_weight      = 5.0
         self.torso_stability_weight      = 0.5
         self.head_stability_weight       = 0.3
+        # Gen2-15: neck position constraint weight
+        self.neck_constraint_weight      = 2.0
+        self.neck_deadband               = 0.15  # ±0.15 rad (≈±9°)
         self.torso_rotation_penalty_weight=0.3
         self.foot_slide_penalty_weight   = 1.5
         self.arm_penalty_weight          = 0.1
@@ -307,6 +326,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.ankle_x_right_idx   = 15
         self.ankle_y_left_idx    = 20
         self.ankle_x_left_idx    = 21
+        self.neck_y_idx          = 22   # Gen2-15: forward/backward head tilt
+        self.neck_x_idx          = 23   # Gen2-15: left/right head tilt
         self.shoulder1_right_idx = 24
         self.shoulder2_right_idx = 25
         self.elbow_right_idx     = 26
@@ -446,6 +467,28 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/abdomen_y']       = float(abd_y)
         info['joint_constraints/abdomen_z']       = float(abd_z)
         info['joint_constraints/abdomen_penalty'] = float(abd_pen)
+
+        # Neck (Gen2-15) — deadband ±0.15 rad on both axes
+        # Prevents head from tilting forward/sideways as a counterweight.
+        # Applied inside curriculum scaling — starts gentle, grows with walking.
+        neck_y = qpos[self.neck_y_idx]
+        neck_x = qpos[self.neck_x_idx]
+        db_neck = self.neck_deadband
+
+        def _neck_pen(angle):
+            excess = abs(angle) - db_neck
+            if excess > 0:
+                return -self.neck_constraint_weight * (excess ** 2)
+            return 0.0
+
+        neck_y_pen = _neck_pen(neck_y)
+        neck_x_pen = _neck_pen(neck_x)
+        neck_pen   = neck_y_pen + neck_x_pen
+        total     += neck_pen
+
+        info['joint_constraints/neck_y']       = float(neck_y)
+        info['joint_constraints/neck_x']       = float(neck_x)
+        info['joint_constraints/neck_penalty'] = float(neck_pen)
 
         # Shoulder1 (arm swing — allow ±0.5 rad naturally)
         # Gen2-13: widened from 0..1 to -0.5..+0.5 rad.
@@ -1154,6 +1197,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'joint_constraints/abdomen_x':       0.0,
             'joint_constraints/abdomen_y':       0.0,
             'joint_constraints/abdomen_z':       0.0,
+            'joint_constraints/neck_penalty':    0.0,   # Gen2-15
+            'joint_constraints/neck_y':          0.0,   # Gen2-15
+            'joint_constraints/neck_x':          0.0,   # Gen2-15
 
             # Gait rewards (initialised; overwritten by gait_info below)
             'gait_reward/alternation_reward':      0.0,

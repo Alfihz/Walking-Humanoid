@@ -36,7 +36,7 @@ AUTO_INCREMENT_DIRS = True
 
 # ============================================================================
 # INFO_KEYWORDS - MUST MATCH Gen2-10 METRIC NAMES EXACTLY
-# Total: 82 metrics across 9 groups
+# Total: 85 metrics across 9 groups
 # ============================================================================
 INFO_KEYWORDS = (
     # ── Base rewards (5) ─────────────────────────────────────────────────
@@ -106,7 +106,7 @@ INFO_KEYWORDS = (
     'gait_reward/hip_y_excursion_right',    # Gen2-10
     'gait_reward/hip_y_excursion_left',     # Gen2-10
 
-    # ── Joint constraints (24) ────────────────────────────────────────────
+    # ── Joint constraints (27) ────────────────────────────────────────────
     'joint_constraints/total_penalty',
     'joint_constraints/progress_scale',
     'joint_constraints/abdomen_penalty',
@@ -131,6 +131,9 @@ INFO_KEYWORDS = (
     'joint_constraints/hip_z_penalty',      # Gen2-06
     'joint_constraints/hip_z_right',        # Gen2-06
     'joint_constraints/hip_z_left',         # Gen2-06
+    'joint_constraints/neck_penalty',       # Gen2-15
+    'joint_constraints/neck_y',             # Gen2-15
+    'joint_constraints/neck_x',             # Gen2-15
 
     # ── Arm swing (5) ─────────────────────────────────────────────────────
     'arm_swing/movement_reward',
