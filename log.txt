@@ -40,4 +40,6 @@ Gen 2 - 13 (TQC15): Humanoid is not falling. Left arm is acting weird but right 
 
 Gen 2 - 14 (TQC16): Humanoid is not falling. Both arms are fixed and staying stable at each side. The humanoid is walking on the feet's heels and does not do a full feet contact. The head is also facing to right and looking up.
     Fix: Add constraints to the neck so it will look forward instead of leaning to one side.
-    
+
+Gen 2 - 15 (TQD17): Humanoid is not falling. Head is stable. Arms are stable. Body is slouching and the walk is mostly right leg dominant. The walk is also dominantly on the heel and not the entire foot.
+    Fix: We are fixing the foot issue first. Added two sensors in the foot so it detects heel and toe.

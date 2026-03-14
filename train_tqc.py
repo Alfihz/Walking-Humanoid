@@ -36,7 +36,7 @@ AUTO_INCREMENT_DIRS = True
 
 # ============================================================================
 # INFO_KEYWORDS - MUST MATCH Gen2-10 METRIC NAMES EXACTLY
-# Total: 85 metrics across 9 groups
+# Total: 88 metrics across 9 groups
 # ============================================================================
 INFO_KEYWORDS = (
     # ── Base rewards (5) ─────────────────────────────────────────────────
@@ -87,7 +87,7 @@ INFO_KEYWORDS = (
     'ultra_simple/upright_reward',
     'ultra_simple/neutral_pose_penalty',
 
-    # ── Gait rewards (17) ─────────────────────────────────────────────────
+    # ── Gait rewards (20) ─────────────────────────────────────────────────
     'gait_reward/alternation_reward',
     'gait_reward/step_frequency_reward',
     'gait_reward/stride_length_reward',
@@ -102,11 +102,14 @@ INFO_KEYWORDS = (
     'gait_reward/foot_slide_pen',
     'gait_reward/positional_lag_penalty',   # Gen2-05
     'gait_reward/push_off_reward',          # Gen2-07
+    'gait_reward/foot_roll_right',          # Gen2-16
+    'gait_reward/foot_roll_left',           # Gen2-16
+    'gait_reward/foot_roll_total',          # Gen2-16
     'gait_reward/hip_y_excursion_pen',      # Gen2-10
     'gait_reward/hip_y_excursion_right',    # Gen2-10
     'gait_reward/hip_y_excursion_left',     # Gen2-10
 
-    # ── Joint constraints (27) ────────────────────────────────────────────
+    # ── Joint constraints (24) ────────────────────────────────────────────
     'joint_constraints/total_penalty',
     'joint_constraints/progress_scale',
     'joint_constraints/abdomen_penalty',
@@ -131,9 +134,6 @@ INFO_KEYWORDS = (
     'joint_constraints/hip_z_penalty',      # Gen2-06
     'joint_constraints/hip_z_right',        # Gen2-06
     'joint_constraints/hip_z_left',         # Gen2-06
-    'joint_constraints/neck_penalty',       # Gen2-15
-    'joint_constraints/neck_y',             # Gen2-15
-    'joint_constraints/neck_x',             # Gen2-15
 
     # ── Arm swing (5) ─────────────────────────────────────────────────────
     'arm_swing/movement_reward',

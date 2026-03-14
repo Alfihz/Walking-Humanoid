@@ -1,9 +1,31 @@
 """
-HumanoidWalkEnv Gen2-15 - NECK CONSTRAINT ADDED
-================================================
-Based on Gen2-14 with one targeted fix.
+HumanoidWalkEnv Gen2-16 - TOE CONTACT & FOOT ROLL REWARD
+=========================================================
+Based on Gen2-15 with one targeted fix.
 
-FIX (Gen2-15) — Neck deadband constraint added (neck_y and neck_x):
+FIX (Gen2-16) — Toe contact sensors added; foot roll reward introduced:
+    The humanoid walked exclusively on its heels because no reward existed for
+    toe contact. The existing foot touch sensors (foot_X_site) sit at midfoot
+    (50% along the foot capsule) — they fire on heel contact, making it
+    impossible to distinguish heel-only from full-foot contact.
+
+    XML changes:
+      Added toe_right_site and toe_left_site at pos=(0.16, 0, 0) — 87% along
+      the 23cm foot capsule from heel. Added toe_right_touch and toe_left_touch
+      sensors linked to these sites.
+
+    Env changes:
+      - Toe sensor IDs and addresses registered in __init__
+      - Per-foot state tracking: left_toe_contact_history, right_toe_contact_history
+        (rolling 20-step window of toe contact boolean)
+      - Foot roll reward: fires when toe contact follows heel contact within the
+        same stance phase (natural heel-to-toe gait). Rewards the fraction of
+        stance time the toe is in contact after the heel lands.
+        weight=3.0, capped at +3.0 per step
+      - New metrics: gait_reward/foot_roll_right, gait_reward/foot_roll_left,
+                     gait_reward/foot_roll_total
+
+FIX (Gen2-15 — preserved) — Neck deadband constraint added (neck_y and neck_x):
     The humanoid's head was free to tilt in any direction, using it as a
     counterweight for forward body lean and lateral imbalance. No position
     constraint existed — only a weak angular velocity penalty (head_stab_pen)
@@ -191,6 +213,11 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             self.right_touch_sensor_id = self.model.sensor('foot_right_touch').id
             self.left_touch_sensor_adr  = self.model.sensor_adr[self.left_touch_sensor_id]
             self.right_touch_sensor_adr = self.model.sensor_adr[self.right_touch_sensor_id]
+            # Gen2-16: toe touch sensors
+            self.left_toe_sensor_id    = self.model.sensor('toe_left_touch').id
+            self.right_toe_sensor_id   = self.model.sensor('toe_right_touch').id
+            self.left_toe_sensor_adr   = self.model.sensor_adr[self.left_toe_sensor_id]
+            self.right_toe_sensor_adr  = self.model.sensor_adr[self.right_toe_sensor_id]
             self.left_foot_geoms  = ['foot_left',  'foot1_left',  'foot2_left',  'lfoot',  'left_foot']
             self.right_foot_geoms = ['foot_right', 'foot1_right', 'foot2_right', 'rfoot', 'right_foot']
         except KeyError as e:
@@ -210,7 +237,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-15 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-16 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -300,6 +327,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Rewards ankle plantarflexion at toe-off during single support.
         self.push_off_weight = 6.0
 
+        # --- Foot roll reward (Gen2-16) -------------------------------------
+        # Rewards heel-to-toe contact pattern during stance phase.
+        self.foot_roll_weight = 3.0
+
         # --- Hip Y excursion penalty (Gen2-10) ---------------------------
         # Each leg must independently achieve a minimum range-of-motion
         # per stride. Tracks rolling window of hip_y per leg; penalises
@@ -350,6 +381,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.right_foot_lag_steps = 0
         self.hip_y_right_history  = []  # Gen2-10: rolling ROM window per leg
         self.hip_y_left_history   = []
+        self.right_toe_contact_history = []  # Gen2-16: toe contact rolling window
+        self.left_toe_contact_history  = []
 
     # ------------------------------------------------------------------ #
     #  CURRICULUM CONTROL                                                 #
@@ -416,6 +449,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.right_foot_lag_steps   = 0
         self.hip_y_right_history    = []  # Gen2-10: rolling ROM windows
         self.hip_y_left_history     = []
+        self.right_toe_contact_history = []  # Gen2-16: toe contact windows
+        self.left_toe_contact_history  = []
 
         # Reset any timestep-local counters
         for attr in ('airborne_duration', 'double_support_duration',
@@ -944,6 +979,37 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         gait_reward += push_off_rew
         info['gait_reward/push_off_reward'] = float(push_off_rew)
 
+        # ---- Foot roll reward (Gen2-16) ----
+        # Rewards heel-to-toe contact pattern during stance.
+        # Toe sensor fires when the front of the foot contacts the floor.
+        # Reward is proportional to fraction of recent steps with toe contact
+        # while the heel (midfoot sensor) is also active — full foot contact.
+        # Only fires when moving forward to prevent standing exploitation.
+        right_toe_contact = float(self.data.sensordata[self.right_toe_sensor_adr]) > 0.1
+        left_toe_contact  = float(self.data.sensordata[self.left_toe_sensor_adr])  > 0.1
+
+        self.right_toe_contact_history.append(float(right_toe_contact))
+        self.left_toe_contact_history.append(float(left_toe_contact))
+        if len(self.right_toe_contact_history) > 20:
+            self.right_toe_contact_history.pop(0)
+        if len(self.left_toe_contact_history) > 20:
+            self.left_toe_contact_history.pop(0)
+
+        foot_roll_rew_r = 0.0
+        foot_roll_rew_l = 0.0
+        if forward_velocity > 0.1 and len(self.right_toe_contact_history) >= 10:
+            # Reward = fraction of recent steps with toe contact, scaled by weight
+            toe_frac_r = float(np.mean(self.right_toe_contact_history))
+            toe_frac_l = float(np.mean(self.left_toe_contact_history))
+            foot_roll_rew_r = min(self.foot_roll_weight * toe_frac_r, 3.0)
+            foot_roll_rew_l = min(self.foot_roll_weight * toe_frac_l, 3.0)
+
+        foot_roll_total = foot_roll_rew_r + foot_roll_rew_l
+        gait_reward += foot_roll_total
+        info['gait_reward/foot_roll_right'] = float(foot_roll_rew_r)
+        info['gait_reward/foot_roll_left']  = float(foot_roll_rew_l)
+        info['gait_reward/foot_roll_total'] = float(foot_roll_total)
+
         # ---- Hip Y excursion penalty (Gen2-10) ----
         # Track each leg's hip_y angle in a rolling window. Compute each
         # leg's ROM independently (max - min over the window). If either
@@ -1216,6 +1282,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'gait_reward/foot_slide_pen':          0.0,
             'gait_reward/positional_lag_penalty':  0.0,
             'gait_reward/push_off_reward':         0.0,
+            'gait_reward/foot_roll_right':        0.0,   # Gen2-16
+            'gait_reward/foot_roll_left':         0.0,   # Gen2-16
+            'gait_reward/foot_roll_total':        0.0,   # Gen2-16
             'gait_reward/hip_y_excursion_pen':     0.0,   # Gen2-10
             'gait_reward/hip_y_excursion_right':   0.0,   # Gen2-10
             'gait_reward/hip_y_excursion_left':    0.0,   # Gen2-10
