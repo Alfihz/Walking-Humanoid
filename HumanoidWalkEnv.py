@@ -1,9 +1,25 @@
 """
-HumanoidWalkEnv Gen2-13 - SHOULDER1 CONSTRAINT WIDENED
-=======================================================
-Based on Gen2-12 with one targeted fix.
+HumanoidWalkEnv Gen2-14 - ARM COORDINATION SIGN FIX
+=====================================================
+Based on Gen2-13 with one targeted fix.
 
-FIX (Gen2-13) — Shoulder1 free zone widened from 0..1 to ±0.5 rad:
+FIX (Gen2-14) — Arm coordination reward sign corrected for left arm:
+    shoulder1 axis is FLIPPED between arms (confirmed from XML):
+      s1r positive = right arm physically FORWARD  ✓
+      s1l positive = left arm physically BACKWARD  ← axis is mirrored
+
+    Gen2-13 coordination reward used s1l > 0.2 to mean "left arm forward",
+    but s1l positive is physically BACKWARD. The agent was being rewarded for
+    pushing the left arm backward (~0.83 rad) and simultaneously penalised by
+    the ±0.5 constraint — stuck in a tug-of-war. This caused the asymmetric
+    arm posture: left arm swinging back, right arm held still.
+
+    Fix: negate all left-arm thresholds and directions in the coordination block.
+      Right stance → left arm FORWARD now means s1l < -0.2 (not s1l > 0.2)
+      Left  stance → penalise left arm going BACKWARD means s1l > 0.0 (not s1l < 0.0)
+    Right arm logic is UNCHANGED — s1r positive = forward was already correct.
+
+FIX (Gen2-13 — preserved) — Shoulder1 free zone widened from 0..1 to ±0.5 rad:
     TensorBoard from Gen2-12 showed shoulder1_left settling at ~1.05 rad
     (just above the upper limit, continuously penalised) and shoulder1_right
     at ~0.83 rad (pressed against the upper end of the free zone). Both arms
@@ -178,7 +194,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-13 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-14 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -565,21 +581,24 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['arm_swing/movement_reward'] = float(movement_rew)
 
         # Coordination: opposite arm swings with stance leg
+        # Gen2-14: left arm axis is FLIPPED — s1l positive = physically BACKWARD.
+        # All left-arm thresholds negated vs Gen2-13.
+        # Right arm logic unchanged — s1r positive = forward was already correct.
         coord_rew = 0.0
-        if right_contact and not left_contact:     # Right stance → left arm forward
-            if s1l > 0.2:
-                coord_rew += 1.5 * s1l
-            if s1r < 0.0:
+        if right_contact and not left_contact:     # Right stance → left arm FORWARD = s1l NEGATIVE
+            if s1l < -0.2:                         # was: s1l > 0.2 (wrong direction)
+                coord_rew += 1.5 * abs(s1l)        # was: 1.5 * s1l
+            if s1r < 0.0:                          # unchanged — right arm backward = penalise
                 coord_rew -= 1.0 * abs(s1r)
-            elif s1r < 0.3:
+            elif s1r < 0.3:                        # unchanged — nudge right arm forward
                 coord_rew += 0.3 * (0.3 - s1r)
-        elif left_contact and not right_contact:   # Left stance → right arm forward
-            if s1r > 0.2:
+        elif left_contact and not right_contact:   # Left stance → right arm FORWARD = s1r POSITIVE
+            if s1r > 0.2:                          # unchanged — already correct
                 coord_rew += 1.5 * s1r
-            if s1l < 0.0:
-                coord_rew -= 1.0 * abs(s1l)
-            elif s1l < 0.3:
-                coord_rew += 0.3 * (0.3 - s1l)
+            if s1l > 0.0:                          # was: s1l < 0.0 (wrong direction)
+                coord_rew -= 1.0 * abs(s1l)        # penalise left arm going backward
+            elif s1l > -0.3:                       # was: s1l < 0.3 (wrong direction)
+                coord_rew += 0.3 * abs(s1l + 0.3)  # nudge left arm toward forward (-0.3)
 
         coord_rew *= self.arm_swing_coordination_weight
         reward    += coord_rew
