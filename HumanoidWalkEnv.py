@@ -10,16 +10,20 @@ FIX (Gen2-17) — Heel-only penalty added; full-foot reward strengthened:
     is the most stable low-CoM posture. A sparse reward for something the agent
     never accidentally achieves provides zero learning signal.
 
-    Fix: replace pure reward with penalty + stronger reward:
-      HEEL-ONLY PENALTY (new, fires immediately every step):
-        When midfoot sensor is active (foot on ground) but toe sensor is NOT,
-        apply -2.0 per step while moving forward. Capped at -10.0.
-        Gated on forward_velocity > 0.1 and left_contact/right_contact.
-        This fires from step 1 of fresh training — immediate pressure.
+    Fix: replace pure reward with bounded fraction-based penalty + stronger reward:
+      HEEL-ONLY PENALTY (rolling window fraction, always bounded):
+        Uses the same 20-step rolling window as the reward.
+        heel_frac = 1.0 - mean(toe_contact_history) per foot.
+        penalty = -weight * heel_frac, capped at -3.0 per foot.
+        Worst case: -6.0 total (both feet heel-only 100% of time).
+        Gated on forward_velocity > 0.1 and window >= 10 steps.
+        Bug fixed: original used per-step binary penalty (-2.0 every step)
+        with a broken cap (max(-2.0, -10.0) = -2.0 always), producing
+        -3,200+ per episode and causing immediate training collapse.
 
       FULL-FOOT REWARD (strengthened from 3.0 → 6.0):
-        When BOTH midfoot AND toe sensors fire simultaneously,
-        reward toe_frac * 6.0, capped at +6.0 per foot.
+        toe_frac * 6.0, capped at +6.0 per foot.
+        Combined worst case is bounded: -6.0 penalty, +12.0 reward.
 
     New metrics: gait_reward/heel_only_right, gait_reward/heel_only_left,
                  gait_reward/heel_only_total
@@ -352,9 +356,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Foot roll reward (Gen2-16, strengthened Gen2-17) --------------
         # Rewards heel-to-toe contact pattern during stance phase.
         self.foot_roll_weight = 6.0    # Gen2-17: doubled from 3.0
-        # --- Heel-only penalty (Gen2-17) -------------------------------------
-        # Penalises stance with midfoot contact but no toe contact.
-        self.heel_only_penalty = -2.0  # per step, capped at -10.0
+        # --- Heel-only penalty (Gen2-17, corrected) -------------------------
+        # Penalises stance without toe contact using rolling window fraction.
+        # weight=3.0, cap -3.0 per foot → worst case -6.0 total. Always bounded.
+        self.heel_only_penalty_weight = 3.0  # applied to heel-only fraction
 
         # --- Hip Y excursion penalty (Gen2-10) ---------------------------
         # Each leg must independently achieve a minimum range-of-motion
@@ -1030,20 +1035,22 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         foot_roll_rew_r = 0.0
         foot_roll_rew_l = 0.0
 
-        if forward_velocity > 0.1:
-            # Right foot: heel contact without toe = heel-only penalty
-            if right_heel_contact and not right_toe_contact:
-                heel_only_pen_r = max(self.heel_only_penalty, -10.0)
-            # Left foot: heel contact without toe = heel-only penalty
-            if left_heel_contact and not left_toe_contact:
-                heel_only_pen_l = max(self.heel_only_penalty, -10.0)
+        if forward_velocity > 0.1 and len(self.right_toe_contact_history) >= 10:
+            toe_frac_r = float(np.mean(self.right_toe_contact_history))
+            toe_frac_l = float(np.mean(self.left_toe_contact_history))
 
-            # Full-foot reward: toe contact fraction over rolling window
-            if len(self.right_toe_contact_history) >= 10:
-                toe_frac_r = float(np.mean(self.right_toe_contact_history))
-                toe_frac_l = float(np.mean(self.left_toe_contact_history))
-                foot_roll_rew_r = min(self.foot_roll_weight * toe_frac_r, 6.0)
-                foot_roll_rew_l = min(self.foot_roll_weight * toe_frac_l, 6.0)
+            # Heel-only penalty: fraction of recent steps WITHOUT toe contact.
+            # Bounded at -3.0 per foot — worst case -6.0 total.
+            # Smooth continuous signal, not a per-step binary spike.
+            heel_frac_r = 1.0 - toe_frac_r
+            heel_frac_l = 1.0 - toe_frac_l
+            heel_only_pen_r = max(-self.heel_only_penalty_weight * heel_frac_r, -3.0)
+            heel_only_pen_l = max(-self.heel_only_penalty_weight * heel_frac_l, -3.0)
+
+            # Full-foot reward: fraction of recent steps WITH toe contact.
+            # Bounded at +6.0 per foot — worst case +12.0 total.
+            foot_roll_rew_r = min(self.foot_roll_weight * toe_frac_r, 6.0)
+            foot_roll_rew_l = min(self.foot_roll_weight * toe_frac_l, 6.0)
 
         heel_only_total = heel_only_pen_r + heel_only_pen_l
         foot_roll_total = foot_roll_rew_r + foot_roll_rew_l
