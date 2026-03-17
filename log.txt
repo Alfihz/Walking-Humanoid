@@ -47,4 +47,5 @@ Gen 2 - 15 (TQD17): Humanoid is not falling. Head is stable. Arms are stable. Bo
 Gen 2 - 16 (TQC18): Humanoid is not falling. Head is slightly tilted to the right. Arms are stable. Body looks stable. Legs are not really alternating, but they push the humanoid forward. Foot is stuck only using heels and not toe.
     Fix: Implement penalty when only heels are used. Increased reward for when both heels and toe touch the ground.
 
-    
+Gen 2 - 17 (TQC20): Humanoid is falling. Body parts are not balanced.
+    Fix: Changed coordinate of contact force on toe and heel. Adjusted ankle_y constraint to not go against toe and heel contact.

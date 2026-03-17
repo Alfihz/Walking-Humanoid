@@ -1,9 +1,30 @@
 """
-HumanoidWalkEnv Gen2-17 - HEEL-ONLY PENALTY + FULL-FOOT REWARD
-===============================================================
-Based on Gen2-16 with one targeted fix.
+HumanoidWalkEnv Gen2-18 - TOE SITE REPOSITIONED + ANKLE_Y WIDENED
+===================================================================
+Based on Gen2-17 with one targeted fix.
 
-FIX (Gen2-17) — Heel-only penalty added; full-foot reward strengthened:
+FIX (Gen2-18) — Toe site moved to x=0.12; ankle_y free zone widened to -0.3:
+    Geometry analysis showed the toe site at x=0.16 (87% along foot) required
+    ankle_y = -0.38 rad (22°) to reach the floor — far beyond the old free zone
+    of -0.1 rad (5.7°). The ankle_y constraint was actively fighting toe contact.
+
+    Minimum ankle_y to bring toe site to floor level:
+      At x=0.16: requires -0.22 rad, beyond old free zone of -0.1 rad
+      At x=0.12: requires -0.23 rad, still beyond old free zone of -0.1 rad
+    The ankle_y free zone must be widened regardless of toe site position.
+
+    XML change: toe_right_site and toe_left_site moved from pos=(0.16,0,0)
+      to pos=(0.12,0,0) — 70% along foot. Still in the toe region but more
+      robustly reachable. Capsule radius = 0.027m, so toe site reaches floor
+      at ankle_y = -0.23 rad, comfortably inside the new -0.3 rad free zone.
+
+    Env change: ankle_y free zone widened from -0.1..0 to -0.3..0 rad.
+      Old: penalised any plantarflexion beyond -0.1 rad (5.7°)
+      New: allows up to -0.3 rad (17°) before penalty — enough for toe contact.
+      XML joint range is -50° to +50° so this is well within physical limits.
+      Weight unchanged at 1.2.
+
+FIX (Gen2-17 — preserved) — Heel-only penalty added; full-foot reward strengthened:
     Gen2-16 monitor data showed 0% toe contact across all 21,000 episodes and
     20M steps. The toe reward never fired once — a bootstrapping failure.
     Heel-walking is the natural emergent solution from fresh training because it
@@ -263,7 +284,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-17 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-18 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -597,12 +618,16 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/elbow_left']    = float(el)
         info['joint_constraints/elbow_penalty'] = float(e_pen)
 
-        # Ankle Y (limited dorsiflexion; allow -0.1..0)
+        # Ankle Y (plantarflexion; allow -0.3..0)
+        # Gen2-18: widened from -0.1 to -0.3 rad (17°).
+        # Old -0.1 rad free zone prevented the toe site from reaching the floor
+        # (minimum required plantarflexion is -0.23 rad at toe site x=0.12).
+        # XML joint range is ±50° so -0.3 rad is well within physical limits.
         ayr = qpos[self.ankle_y_right_idx]
         ayl = qpos[self.ankle_y_left_idx]
-        ayr_pen = -self.ankle_y_constraint_weight * (ayr + 0.1) ** 2 if ayr < -0.1 else \
+        ayr_pen = -self.ankle_y_constraint_weight * (ayr + 0.3) ** 2 if ayr < -0.3 else \
                   -self.ankle_y_constraint_weight * ayr ** 2 if ayr > 0.0 else 0.0
-        ayl_pen = -self.ankle_y_constraint_weight * (ayl + 0.1) ** 2 if ayl < -0.1 else \
+        ayl_pen = -self.ankle_y_constraint_weight * (ayl + 0.3) ** 2 if ayl < -0.3 else \
                   -self.ankle_y_constraint_weight * ayl ** 2 if ayl > 0.0 else 0.0
         ay_pen  = ayr_pen + ayl_pen
         total  += ay_pen
