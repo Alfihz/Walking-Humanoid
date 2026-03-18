@@ -50,5 +50,8 @@ Gen 2 - 16 (TQC18): Humanoid is not falling. Head is slightly tilted to the righ
 Gen 2 - 17 (TQC20): Humanoid is falling. Body parts are not balanced.
     Fix: Changed coordinate of contact force on toe and heel. Adjusted ankle_y constraint to not go against toe and heel contact.
 
-Gen 2- 18 (TQC21): Humanoid is falling. Feet sensors were placed in the wrong coordinates.
+Gen 2 - 18 (TQC21): Humanoid is falling. Feet sensors were placed in the wrong coordinates.
     Fix: Fixed feet sensor coordinates and removed only-heel penalty.
+
+Gen 2 - 19 (TQC22): Humanoid is not falling. Fixed falling issue because of feet sensors. Issue is back to Gen 2-16 where it is right leaning (both head and feet). Left leg was stiff/dormant.
+    Fix: Added single-support duration. If one leg is working overtime, a penalty will be given. Also removed constraint on ankle_x and ankle_y. Hopefully full-foot contact reward is enough.

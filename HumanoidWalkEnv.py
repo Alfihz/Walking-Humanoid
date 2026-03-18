@@ -1,7 +1,7 @@
 """
-HumanoidWalkEnv Gen2-19 - HEEL-ONLY PENALTY REMOVED
-=====================================================
-Based on Gen2-18 with one targeted fix.
+HumanoidWalkEnv Gen2-20 - SINGLE-SUPPORT CAP + ANKLE CONSTRAINTS REMOVED
+==========================================================================
+Based on Gen2-19 with three targeted changes.
 
 FIX (Gen2-18) — Toe site moved to x=0.12; ankle_y free zone widened to -0.3:
     Geometry analysis showed the toe site at x=0.16 (87% along foot) required
@@ -284,7 +284,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-19 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-20 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -342,11 +342,16 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.shoulder1_constraint_weight = 1.0
         self.shoulder2_constraint_weight = 1.5
         self.elbow_constraint_weight     = 0.8
-        self.ankle_y_constraint_weight   = 1.2
-        # Gen2-03: weight lowered 6.0→3.0, deadband widened ±3°→±6°
-        self.ankle_x_constraint_weight   = 3.0
-        # Deadband: feet are allowed ±0.10 rad (≈±6°) of lateral tilt.
-        self.ankle_x_deadband            = 0.10
+        # ankle_y and ankle_x constraints removed in Gen2-20.
+        # Full-foot contact reward and push-off reward handle ankle incentives.
+
+        # --- Single-support duration cap (Gen2-20) -----------------------
+        # Max consecutive steps allowed on one foot before penalty fires.
+        # At frame_skip=5, timestep=0.002: 20 steps ≈ 0.1s of stance.
+        # Natural single-support phase is ~0.3s; cap at 0.5s (50 steps).
+        self.MAX_SINGLE_SUPPORT_STEPS  = 50   # steps before penalty fires
+        self.single_support_pen_weight = -2.0  # per step beyond cap
+        self.single_support_pen_cap    = -10.0 # max penalty per step
         self.abdomen_x_constraint_weight = 2.0
         self.abdomen_y_constraint_weight = 1.5
         self.abdomen_z_constraint_weight = 1.8
@@ -426,6 +431,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.path_deviation_history = []
         self.left_foot_lag_steps  = 0   # Gen2-05: positional lag counter
         self.right_foot_lag_steps = 0
+        self.right_only_steps     = 0   # Gen2-20: single-support duration counter
+        self.left_only_steps      = 0
         self.hip_y_right_history  = []  # Gen2-10: rolling ROM window per leg
         self.hip_y_left_history   = []
         self.right_toe_contact_history = []  # Gen2-16: toe contact rolling window
@@ -494,6 +501,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.episode_start_y        = self.data.qpos[1]
         self.left_foot_lag_steps    = 0   # Gen2-05: positional lag counters
         self.right_foot_lag_steps   = 0
+        self.right_only_steps       = 0   # Gen2-20: single-support duration
+        self.left_only_steps        = 0
         self.hip_y_right_history    = []  # Gen2-10: rolling ROM windows
         self.hip_y_left_history     = []
         self.right_toe_contact_history = []  # Gen2-16: toe contact windows
@@ -614,23 +623,14 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/elbow_left']    = float(el)
         info['joint_constraints/elbow_penalty'] = float(e_pen)
 
-        # Ankle Y (plantarflexion; allow -0.3..0)
-        # Gen2-18: widened from -0.1 to -0.3 rad (17°).
-        # Old -0.1 rad free zone prevented the toe site from reaching the floor
-        # (minimum required plantarflexion is -0.23 rad at toe site x=0.12).
-        # XML joint range is ±50° so -0.3 rad is well within physical limits.
+        # Ankle Y — constraint removed in Gen2-20.
+        # Full-foot contact reward and push-off reward handle ankle incentives.
+        # Kept in metrics for monitoring only (penalty always 0).
         ayr = qpos[self.ankle_y_right_idx]
         ayl = qpos[self.ankle_y_left_idx]
-        ayr_pen = -self.ankle_y_constraint_weight * (ayr + 0.3) ** 2 if ayr < -0.3 else \
-                  -self.ankle_y_constraint_weight * ayr ** 2 if ayr > 0.0 else 0.0
-        ayl_pen = -self.ankle_y_constraint_weight * (ayl + 0.3) ** 2 if ayl < -0.3 else \
-                  -self.ankle_y_constraint_weight * ayl ** 2 if ayl > 0.0 else 0.0
-        ay_pen  = ayr_pen + ayl_pen
-        total  += ay_pen
-
         info['joint_constraints/ankle_y_right']   = float(ayr)
         info['joint_constraints/ankle_y_left']    = float(ayl)
-        info['joint_constraints/ankle_y_penalty'] = float(ay_pen)
+        info['joint_constraints/ankle_y_penalty'] = 0.0
 
         # Scale by master weight and curriculum progress
         # NOTE: ankle_x is intentionally excluded from this scaling —
@@ -638,28 +638,16 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         scale  = 0.2 + 0.8 * min(1.0, self.walking_progress * 2)
         total *= self.joint_constraint_weight * scale
 
-        # ── ANKLE X (lateral foot twist) ─────────────────────────────────
-        # Applied AFTER curriculum scaling so it is always at full strength.
-        # Deadband: ±ankle_x_deadband rad is free (natural small tilt allowed).
-        # Outside deadband: strong quadratic penalty on the excess angle only.
+        # ── ANKLE X — constraint removed in Gen2-20. ─────────────────────
+        # Eval showed ankle_x reaching ±34° vs ±5.7° deadband — the largest
+        # constraint penalty in the model (-1.41 avg). Natural lateral ankle
+        # adjustment needed for balance. Full-foot reward handles orientation.
+        # Kept in metrics for monitoring only (penalty always 0).
         axr = qpos[self.ankle_x_right_idx]
         axl = qpos[self.ankle_x_left_idx]
-        db  = self.ankle_x_deadband  # ±0.05 rad ≈ ±3°
-
-        def _ax_pen(angle):
-            excess = abs(angle) - db
-            if excess > 0:
-                return -self.ankle_x_constraint_weight * (excess ** 2)
-            return 0.0
-
-        axr_pen = _ax_pen(axr)
-        axl_pen = _ax_pen(axl)
-        ax_pen  = axr_pen + axl_pen
-        total  += ax_pen   # added at full weight, no curriculum discount
-
         info['joint_constraints/ankle_x_right']   = float(axr)
         info['joint_constraints/ankle_x_left']    = float(axl)
-        info['joint_constraints/ankle_x_penalty'] = float(ax_pen)
+        info['joint_constraints/ankle_x_penalty'] = 0.0
 
         # ── HIP Z (leg rotation = foot direction) ─────────────────────────
         # Gen2-06: hip_z controls which direction the foot points.
@@ -882,6 +870,33 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
 
         gait_reward += self.contact_pattern_weight * contact_pattern_rew
         info['gait_reward/contact_pattern_rew'] = float(self.contact_pattern_weight * contact_pattern_rew)
+
+        # ---- Single-support duration cap (Gen2-20) ----
+        # Track how many consecutive steps each leg is the SOLE planted foot.
+        # Penalises holding one leg up for too long — breaks the right-leg-only exploit.
+        # Resets as soon as the opposite foot touches down.
+        if right_contact and not left_contact:
+            self.right_only_steps += 1
+            self.left_only_steps   = 0
+        elif left_contact and not right_contact:
+            self.left_only_steps  += 1
+            self.right_only_steps  = 0
+        else:
+            self.right_only_steps = 0
+            self.left_only_steps  = 0
+
+        ss_pen_r = 0.0
+        ss_pen_l = 0.0
+        if self.right_only_steps > self.MAX_SINGLE_SUPPORT_STEPS:
+            ss_pen_r = max(self.single_support_pen_weight, self.single_support_pen_cap)
+        if self.left_only_steps > self.MAX_SINGLE_SUPPORT_STEPS:
+            ss_pen_l = max(self.single_support_pen_weight, self.single_support_pen_cap)
+
+        ss_pen_total = ss_pen_r + ss_pen_l
+        gait_reward += ss_pen_total
+        info['gait_reward/single_support_pen_right'] = float(ss_pen_r)
+        info['gait_reward/single_support_pen_left']  = float(ss_pen_l)
+        info['gait_reward/single_support_pen_total'] = float(ss_pen_total)
 
         # Foot positions
         lf_y = self.data.site_xpos[self.left_foot_site_id][1]
@@ -1327,6 +1342,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'gait_reward/stride_length_reward':    0.0,
             'gait_reward/static_standing_penalty': 0.0,
             'gait_reward/contact_pattern_rew':     0.0,
+            'gait_reward/single_support_pen_right': 0.0,   # Gen2-20
+            'gait_reward/single_support_pen_left':  0.0,   # Gen2-20
+            'gait_reward/single_support_pen_total': 0.0,   # Gen2-20
             'gait_reward/wide_stance_penalty':     0.0,
             'gait_reward/narrow_stance_penalty':   0.0,
             'gait_reward/clearance_rew':           0.0,
