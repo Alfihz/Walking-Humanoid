@@ -1,5 +1,7 @@
 import os
 import re
+import csv
+import math
 import torch
 import argparse
 import numpy as np
@@ -11,7 +13,7 @@ from HumanoidWalkEnv import HumanoidWalkEnv
 # ============================================================
 #  EASY CONFIGURATION — Change these before running
 # ============================================================
-VERSION         = 21                                           # Model version number (XX)
+VERSION         = 22                                           # Model version number (XX)
 MODEL_FILE      = "tqc_humanoid_walker_final_20000016_steps"  # .zip added automatically by TQC.load()
 VECNORM_FILE    = "tqc_vecnormalize_final.pkl"
 VIDEO_TIMESTEPS = 10000                                         # Total steps to record (also caps eval length when recording)
@@ -61,7 +63,7 @@ def save_video(frames: list, path: str, fps: int = 100):
 
 def evaluate(model_path, vecnormalize_path=None, episodes=5, render=True,
              record_dir=None, video_length=3000, track_camera=True,
-             track_camera_name="track", switch_cameras=False):
+             track_camera_name="track", switch_cameras=False, log_csv=False):
     """
     Evaluate a trained humanoid model.
 
@@ -131,9 +133,65 @@ def evaluate(model_path, vecnormalize_path=None, episodes=5, render=True,
         video_path = os.path.join(record_dir, f"{base_name}_{counter}.mp4")
         print(f"  Recording: {video_path}  (stops after {video_length} steps)")
 
+    # ── CSV logging setup ────────────────────────────────────────────────────
+    csv_file   = None
+    csv_writer = None
+    CSV_COLUMNS = [
+        'episode', 'step', 'sim_time',
+        'pos_x', 'pos_y', 'pos_z', 'forward_vel',
+        'torso_quat_w', 'torso_roll_deg', 'torso_pitch_deg',
+        'hip_y_right_deg', 'hip_y_left_deg',
+        'knee_right_deg',  'knee_left_deg',
+        'ankle_y_right_deg', 'ankle_y_left_deg',
+        'ankle_x_right_deg', 'ankle_x_left_deg',
+        'heel_right', 'heel_left',
+        'toe_right',  'toe_left',
+        'left_contact', 'right_contact',
+        'single_support', 'both_contact', 'no_contact',
+        'episode_reward',
+    ]
+    if log_csv:
+        if video_path:
+            # Same name/folder as the video — just swap .mp4 for .csv
+            log_path = video_path.replace('.mp4', '.csv')
+        else:
+            # No video — save to logs/TQCXX/ with same naming convention
+            model_ts = parse_model_timesteps(MODEL_FILE)
+            base_name = f"TQC{VERSION:02d}_{model_ts}_{video_length}"
+            log_dir   = os.path.join("video_simulations", f"TQC{VERSION:02d}")
+            os.makedirs(log_dir, exist_ok=True)
+            counter   = next_video_index(log_dir, base_name)
+            log_path  = os.path.join(log_dir, f"{base_name}_{counter}.csv")
+        csv_file   = open(log_path, 'w', newline='')
+        csv_writer = csv.DictWriter(csv_file, fieldnames=CSV_COLUMNS)
+        csv_writer.writeheader()
+        print(f"  CSV log  : {log_path}")
+
     all_rewards = []
     frames      = []
     total_steps = 0
+
+    # Sensor + body IDs — resolved once after first env creation
+    _sensor_ids_resolved = [False]
+    _heel_r_adr = [0]; _heel_l_adr = [0]
+    _toe_r_adr  = [0]; _toe_l_adr  = [0]
+    _torso_id   = [0]
+    _prev_pos_x = [0.0]
+
+    def _resolve_sensor_ids():
+        if _sensor_ids_resolved[0] or not _base_env:
+            return
+        import mujoco
+        m = _base_env[0].model
+        def _adr(name):
+            sid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, name)
+            return int(m.sensor_adr[sid])
+        _heel_r_adr[0] = _adr('foot_right_touch')
+        _heel_l_adr[0] = _adr('foot_left_touch')
+        _toe_r_adr[0]  = _adr('toe_right_touch')
+        _toe_l_adr[0]  = _adr('toe_left_touch')
+        _torso_id[0]   = int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'torax'))
+        _sensor_ids_resolved[0] = True
 
     for ep in range(episodes):
         # Don't start a new episode if we've already hit the step cap
@@ -143,6 +201,9 @@ def evaluate(model_path, vecnormalize_path=None, episodes=5, render=True,
         obs       = env.reset()
         ep_reward = 0.0
         state     = None
+        ep_step   = 0
+        _resolve_sensor_ids()
+        _prev_pos_x[0] = float(_base_env[0].data.qpos[0]) if _base_env else 0.0
 
         while True:
             action, _ = model.predict(obs, deterministic=True, state=state)
@@ -152,6 +213,71 @@ def evaluate(model_path, vecnormalize_path=None, episodes=5, render=True,
             d = bool(done[0])    if isinstance(done,   np.ndarray) else bool(done)
             ep_reward += r
             total_steps += 1
+            ep_step     += 1
+
+            # ── Per-step CSV logging ──────────────────────────────────────────
+            if log_csv and csv_writer and _base_env:
+                base  = _base_env[0]
+                mdata = base.data
+                qpos  = mdata.qpos
+
+                # Position and velocity
+                pos_x = float(qpos[0])
+                pos_y = float(qpos[1])
+                pos_z = float(qpos[2])
+                fwd_vel = (pos_x - _prev_pos_x[0]) / base.dt
+                _prev_pos_x[0] = pos_x
+
+                # Torso orientation from quaternion (xquat[torso_id])
+                tq = mdata.xquat[_torso_id[0]]
+                qw, qx, qy, qz = float(tq[0]), float(tq[1]), float(tq[2]), float(tq[3])
+                roll_rad  = math.atan2(2*(qw*qx + qy*qz), 1 - 2*(qx*qx + qy*qy))
+                pitch_rad = math.asin(max(-1.0, min(1.0, 2*(qw*qy - qz*qx))))
+
+                # Joint angles — convert rad to degrees
+                def deg(idx): return float(qpos[idx]) * 180.0 / math.pi
+
+                # Sensor readings
+                sd = mdata.sensordata
+                heel_r = float(sd[_heel_r_adr[0]])
+                heel_l = float(sd[_heel_l_adr[0]])
+                toe_r  = float(sd[_toe_r_adr[0]])
+                toe_l  = float(sd[_toe_l_adr[0]])
+
+                # Geom contacts
+                lc = base._check_foot_contact_mujoco(base.left_foot_geoms)
+                rc = base._check_foot_contact_mujoco(base.right_foot_geoms)
+
+                csv_writer.writerow({
+                    'episode':           ep + 1,
+                    'step':              ep_step,
+                    'sim_time':          round(float(mdata.time), 4),
+                    'pos_x':             round(pos_x, 4),
+                    'pos_y':             round(pos_y, 4),
+                    'pos_z':             round(pos_z, 4),
+                    'forward_vel':       round(fwd_vel, 4),
+                    'torso_quat_w':      round(qw, 4),
+                    'torso_roll_deg':    round(roll_rad  * 180.0 / math.pi, 2),
+                    'torso_pitch_deg':   round(pitch_rad * 180.0 / math.pi, 2),
+                    'hip_y_right_deg':   round(deg(12), 2),
+                    'hip_y_left_deg':    round(deg(18), 2),
+                    'knee_right_deg':    round(deg(13), 2),
+                    'knee_left_deg':     round(deg(19), 2),
+                    'ankle_y_right_deg': round(deg(14), 2),
+                    'ankle_y_left_deg':  round(deg(20), 2),
+                    'ankle_x_right_deg': round(deg(15), 2),
+                    'ankle_x_left_deg':  round(deg(21), 2),
+                    'heel_right':        round(heel_r, 3),
+                    'heel_left':         round(heel_l, 3),
+                    'toe_right':         round(toe_r,  3),
+                    'toe_left':          round(toe_l,  3),
+                    'left_contact':      int(lc),
+                    'right_contact':     int(rc),
+                    'single_support':    int(lc != rc),
+                    'both_contact':      int(lc and rc),
+                    'no_contact':        int(not lc and not rc),
+                    'episode_reward':    round(ep_reward, 2),
+                })
 
             if record_dir:
                 # Set camera_id directly on the renderer before calling render().
@@ -195,6 +321,9 @@ def evaluate(model_path, vecnormalize_path=None, episodes=5, render=True,
         all_rewards.append(ep_reward)
 
     env.close()
+    if csv_file:
+        csv_file.close()
+        print(f"  CSV saved.")
     print(f"\n  Mean reward: {np.mean(all_rewards):.2f}  ({len(all_rewards)} episode(s))")
 
     if frames and video_path:
@@ -217,6 +346,7 @@ if __name__ == "__main__":
                         help="Camera to use when recording (default: track). Ignored when --switch is set.")
     parser.add_argument("--switch",          action="store_true",
                         help="Cycle cameras in thirds: track → track_side → track_front. Recording only.")
+    parser.add_argument("--log",             action="store_true",    help="Save per-step CSV log (saved alongside video or to logs/TQCXX/)")
     args = parser.parse_args()
 
     # Parser takes priority; fall back to top-of-file variables
@@ -251,4 +381,5 @@ if __name__ == "__main__":
         track_camera=not args.no_track_camera,
         track_camera_name=args.camera,
         switch_cameras=args.switch,
+        log_csv=args.log,
     )
