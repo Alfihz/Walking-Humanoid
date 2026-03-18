@@ -156,10 +156,10 @@
                         <geom name="foot1_right" class="foot1"/>
                         <geom name="foot2_right" class="foot2"/>
                         <inertial pos="0.075 0 0" mass="1.6" diaginertia="0.009168 0.008528 0.008528"/>
-                        <!-- Foot site for sensor -->
-                        <site name="foot_right_site" pos="0.075 0 0" size="0.01" rgba="1 0 0 .5"/>
-                        <!-- Toe site (Gen2-18: moved from 0.16 to 0.12 — 70% along foot, reachable with normal plantarflexion) -->
-                        <site name="toe_right_site" pos="0.12 0 0" size="0.01" rgba="0 1 0 .5"/>
+                        <!-- Heel site: x=-0.02 (2cm forward of heel contact at x=-0.04) -->
+                        <site name="foot_right_site" pos="-0.02 0 0" size="0.01" rgba="1 0 0 .5"/>
+                        <!-- Toe site for Gen2-16 heel-to-toe contact detection -->
+                        <site name="toe_right_site" pos="0.17 0 0" size="0.01" rgba="0 1 0 .5"/>
                     </body>
                 </body>
             </body>
@@ -182,10 +182,10 @@
                         <geom name="foot1_left" class="foot1"/>
                         <geom name="foot2_left" class="foot2"/>
                         <inertial pos="0.075 0 0" mass="1.6" diaginertia="0.009168 0.008528 0.008528"/>
-                         <!-- Foot site for sensor -->
-                        <site name="foot_left_site" pos="0.075 0 0" size="0.01" rgba="1 0 0 .5"/>
-                        <!-- Toe site (Gen2-18: moved from 0.16 to 0.12 — 70% along foot, reachable with normal plantarflexion) -->
-                        <site name="toe_left_site" pos="0.12 0 0" size="0.01" rgba="0 1 0 .5"/>
+                        <!-- Heel site: x=-0.02 (2cm forward of heel contact at x=-0.04) -->
+                        <site name="foot_left_site" pos="-0.02 0 0" size="0.01" rgba="1 0 0 .5"/>
+                        <!-- Toe site for Gen2-16 heel-to-toe contact detection -->
+                        <site name="toe_left_site" pos="0.17 0 0" size="0.01" rgba="0 1 0 .5"/>
                     </body>
                 </body>
              </body>

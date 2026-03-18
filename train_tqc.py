@@ -36,7 +36,7 @@ AUTO_INCREMENT_DIRS = True
 
 # ============================================================================
 # INFO_KEYWORDS - MUST MATCH Gen2-10 METRIC NAMES EXACTLY
-# Total: 91 metrics across 9 groups
+# Total: 88 metrics across 9 groups
 # ============================================================================
 INFO_KEYWORDS = (
     # ── Base rewards (5) ─────────────────────────────────────────────────
@@ -87,7 +87,7 @@ INFO_KEYWORDS = (
     'ultra_simple/upright_reward',
     'ultra_simple/neutral_pose_penalty',
 
-        # ── Gait rewards (23) ─────────────────────────────────────────────────
+        # ── Gait rewards (20) ─────────────────────────────────────────────────
     'gait_reward/alternation_reward',
     'gait_reward/step_frequency_reward',
     'gait_reward/stride_length_reward',
@@ -105,9 +105,6 @@ INFO_KEYWORDS = (
     'gait_reward/foot_roll_right',          # Gen2-16
     'gait_reward/foot_roll_left',           # Gen2-16
     'gait_reward/foot_roll_total',          # Gen2-16
-    'gait_reward/heel_only_right',          # Gen2-17
-    'gait_reward/heel_only_left',           # Gen2-17
-    'gait_reward/heel_only_total',          # Gen2-17
     'gait_reward/hip_y_excursion_pen',      # Gen2-10
     'gait_reward/hip_y_excursion_right',    # Gen2-10
     'gait_reward/hip_y_excursion_left',     # Gen2-10

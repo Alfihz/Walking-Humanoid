@@ -1,7 +1,7 @@
 """
-HumanoidWalkEnv Gen2-18 - TOE SITE REPOSITIONED + ANKLE_Y WIDENED
-===================================================================
-Based on Gen2-17 with one targeted fix.
+HumanoidWalkEnv Gen2-19 - HEEL-ONLY PENALTY REMOVED
+=====================================================
+Based on Gen2-18 with one targeted fix.
 
 FIX (Gen2-18) — Toe site moved to x=0.12; ankle_y free zone widened to -0.3:
     Geometry analysis showed the toe site at x=0.16 (87% along foot) required
@@ -284,7 +284,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-18 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-19 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -376,11 +376,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
 
         # --- Foot roll reward (Gen2-16, strengthened Gen2-17) --------------
         # Rewards heel-to-toe contact pattern during stance phase.
-        self.foot_roll_weight = 6.0    # Gen2-17: doubled from 3.0
-        # --- Heel-only penalty (Gen2-17, corrected) -------------------------
-        # Penalises stance without toe contact using rolling window fraction.
-        # weight=3.0, cap -3.0 per foot → worst case -6.0 total. Always bounded.
-        self.heel_only_penalty_weight = 3.0  # applied to heel-only fraction
+        self.foot_roll_weight = 6.0    # Gen2-17: full-foot contact reward weight
 
         # --- Hip Y excursion penalty (Gen2-10) ---------------------------
         # Each leg must independently achieve a minimum range-of-motion
@@ -1037,16 +1033,14 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # ---- Foot roll reward (Gen2-16) ----
         # Rewards heel-to-toe contact pattern during stance.
         # Toe sensor fires when the front of the foot contacts the floor.
-        # ---- Heel-only penalty + full-foot reward (Gen2-17) ----
-        # PENALTY: fires immediately when foot is grounded but toe is NOT.
-        #   Midfoot sensor = foot on ground. Toe sensor absent = heel-only.
-        #   Dense signal from step 1 — agent feels cost of heel-walking instantly.
-        # REWARD: fires when toe sensor also active = full foot contact.
-        #   Strengthened to 6.0 (was 3.0) to be worth achieving.
-        right_heel_contact = float(self.data.sensordata[self.right_touch_sensor_adr]) > 0.1
-        left_heel_contact  = float(self.data.sensordata[self.left_touch_sensor_adr])  > 0.1
-        right_toe_contact  = float(self.data.sensordata[self.right_toe_sensor_adr])   > 0.1
-        left_toe_contact   = float(self.data.sensordata[self.left_toe_sensor_adr])    > 0.1
+        # ---- Full-foot contact reward (Gen2-19) ----
+        # Gen2-19: heel-only penalty removed — sensor placement is now correct
+        # (heel site x=-0.02, toe site x=0.17 from physics contact data).
+        # Reward toe contact fraction using rolling 20-step window.
+        # Bounded at +6.0 per foot — worst case +12.0 total.
+        # Gated on forward_velocity > 0.1 and window >= 10 steps.
+        right_toe_contact = float(self.data.sensordata[self.right_toe_sensor_adr]) > 0.1
+        left_toe_contact  = float(self.data.sensordata[self.left_toe_sensor_adr])  > 0.1
 
         self.right_toe_contact_history.append(float(right_toe_contact))
         self.left_toe_contact_history.append(float(left_toe_contact))
@@ -1055,34 +1049,17 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         if len(self.left_toe_contact_history) > 20:
             self.left_toe_contact_history.pop(0)
 
-        heel_only_pen_r = 0.0
-        heel_only_pen_l = 0.0
         foot_roll_rew_r = 0.0
         foot_roll_rew_l = 0.0
 
         if forward_velocity > 0.1 and len(self.right_toe_contact_history) >= 10:
             toe_frac_r = float(np.mean(self.right_toe_contact_history))
             toe_frac_l = float(np.mean(self.left_toe_contact_history))
-
-            # Heel-only penalty: fraction of recent steps WITHOUT toe contact.
-            # Bounded at -3.0 per foot — worst case -6.0 total.
-            # Smooth continuous signal, not a per-step binary spike.
-            heel_frac_r = 1.0 - toe_frac_r
-            heel_frac_l = 1.0 - toe_frac_l
-            heel_only_pen_r = max(-self.heel_only_penalty_weight * heel_frac_r, -3.0)
-            heel_only_pen_l = max(-self.heel_only_penalty_weight * heel_frac_l, -3.0)
-
-            # Full-foot reward: fraction of recent steps WITH toe contact.
-            # Bounded at +6.0 per foot — worst case +12.0 total.
             foot_roll_rew_r = min(self.foot_roll_weight * toe_frac_r, 6.0)
             foot_roll_rew_l = min(self.foot_roll_weight * toe_frac_l, 6.0)
 
-        heel_only_total = heel_only_pen_r + heel_only_pen_l
         foot_roll_total = foot_roll_rew_r + foot_roll_rew_l
-        gait_reward += heel_only_total + foot_roll_total
-        info['gait_reward/heel_only_right'] = float(heel_only_pen_r)
-        info['gait_reward/heel_only_left']  = float(heel_only_pen_l)
-        info['gait_reward/heel_only_total'] = float(heel_only_total)
+        gait_reward += foot_roll_total
         info['gait_reward/foot_roll_right'] = float(foot_roll_rew_r)
         info['gait_reward/foot_roll_left']  = float(foot_roll_rew_l)
         info['gait_reward/foot_roll_total'] = float(foot_roll_total)
@@ -1362,9 +1339,6 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'gait_reward/foot_roll_right':        0.0,   # Gen2-16
             'gait_reward/foot_roll_left':         0.0,   # Gen2-16
             'gait_reward/foot_roll_total':        0.0,   # Gen2-16
-            'gait_reward/heel_only_right':        0.0,   # Gen2-17
-            'gait_reward/heel_only_left':         0.0,   # Gen2-17
-            'gait_reward/heel_only_total':        0.0,   # Gen2-17
             'gait_reward/hip_y_excursion_pen':     0.0,   # Gen2-10
             'gait_reward/hip_y_excursion_right':   0.0,   # Gen2-10
             'gait_reward/hip_y_excursion_left':    0.0,   # Gen2-10
