@@ -13,7 +13,7 @@ from HumanoidWalkEnv import HumanoidWalkEnv
 # ============================================================
 #  EASY CONFIGURATION — Change these before running
 # ============================================================
-VERSION         = 23                                           # Model version number (XX)
+VERSION         = 24                                           # Model version number (XX)
 MODEL_FILE      = "tqc_humanoid_walker_final_20000016_steps"  # .zip added automatically by TQC.load()
 VECNORM_FILE    = "tqc_vecnormalize_final.pkl"
 VIDEO_TIMESTEPS = 10000                                         # Total steps to record (also caps eval length when recording)
@@ -162,6 +162,7 @@ def evaluate(model_path, vecnormalize_path=None, episodes=5, render=True,
             os.makedirs(log_dir, exist_ok=True)
             counter   = next_video_index(log_dir, base_name)
             log_path  = os.path.join(log_dir, f"{base_name}_{counter}.csv")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
         csv_file   = open(log_path, 'w', newline='')
         csv_writer = csv.DictWriter(csv_file, fieldnames=CSV_COLUMNS)
         csv_writer.writeheader()

@@ -1,7 +1,7 @@
 """
-HumanoidWalkEnv Gen2-20 - SINGLE-SUPPORT CAP + ANKLE CONSTRAINTS REMOVED
+HumanoidWalkEnv Gen2-21 - ANKLE CONSTRAINTS RESTORED WITH WIDER DEADBANDS
 ==========================================================================
-Based on Gen2-19 with three targeted changes.
+Based on Gen2-20 with two targeted changes.
 
 FIX (Gen2-18) — Toe site moved to x=0.12; ankle_y free zone widened to -0.3:
     Geometry analysis showed the toe site at x=0.16 (87% along foot) required
@@ -284,7 +284,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-20 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-21 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -342,8 +342,11 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.shoulder1_constraint_weight = 1.0
         self.shoulder2_constraint_weight = 1.5
         self.elbow_constraint_weight     = 0.8
-        # ankle_y and ankle_x constraints removed in Gen2-20.
-        # Full-foot contact reward and push-off reward handle ankle incentives.
+        # Gen2-21: ankle constraints restored with wider deadbands.
+        self.ankle_y_constraint_weight   = 1.2   # restored Gen2-21
+        self.ankle_x_constraint_weight   = 3.0   # restored Gen2-21
+        self.ankle_x_deadband            = 0.25  # ±14.3° (was ±5.7°, widened Gen2-21)
+        # ankle_y free zone: -0.45..0.0 rad (-25.8°) covers natural push-off
 
         # --- Single-support duration cap (Gen2-20) -----------------------
         # Max consecutive steps allowed on one foot before penalty fires.
@@ -623,14 +626,19 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/elbow_left']    = float(el)
         info['joint_constraints/elbow_penalty'] = float(e_pen)
 
-        # Ankle Y — constraint removed in Gen2-20.
-        # Full-foot contact reward and push-off reward handle ankle incentives.
-        # Kept in metrics for monitoring only (penalty always 0).
+        # Ankle Y — restored Gen2-21 with wider free zone.
+        # Free zone: -0.45..0.0 rad (-25.8°) — covers natural push-off (~25°)
+        # and prevents exploitation of the full -45° physical limit.
+        # Gen2-20 eval: ankle_y_left pinned at -42° mean, -45° min (93% of time).
         ayr = qpos[self.ankle_y_right_idx]
         ayl = qpos[self.ankle_y_left_idx]
+        ayr_pen = -self.ankle_y_constraint_weight * (ayr + 0.45) ** 2 if ayr < -0.45 else                   -self.ankle_y_constraint_weight * ayr ** 2 if ayr > 0.0 else 0.0
+        ayl_pen = -self.ankle_y_constraint_weight * (ayl + 0.45) ** 2 if ayl < -0.45 else                   -self.ankle_y_constraint_weight * ayl ** 2 if ayl > 0.0 else 0.0
+        ay_pen  = ayr_pen + ayl_pen
+        total  += ay_pen
         info['joint_constraints/ankle_y_right']   = float(ayr)
         info['joint_constraints/ankle_y_left']    = float(ayl)
-        info['joint_constraints/ankle_y_penalty'] = 0.0
+        info['joint_constraints/ankle_y_penalty'] = float(ay_pen)
 
         # Scale by master weight and curriculum progress
         # NOTE: ankle_x is intentionally excluded from this scaling —
@@ -638,16 +646,28 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         scale  = 0.2 + 0.8 * min(1.0, self.walking_progress * 2)
         total *= self.joint_constraint_weight * scale
 
-        # ── ANKLE X — constraint removed in Gen2-20. ─────────────────────
-        # Eval showed ankle_x reaching ±34° vs ±5.7° deadband — the largest
-        # constraint penalty in the model (-1.41 avg). Natural lateral ankle
-        # adjustment needed for balance. Full-foot reward handles orientation.
-        # Kept in metrics for monitoring only (penalty always 0).
+        # ── ANKLE X — restored Gen2-21 with wider deadband. ─────────────
+        # Deadband: ±0.25 rad (±14.3°) — Gen2-20 eval showed feet spinning to
+        # ±53°. Natural walking needs ~±20°; ±14° catches extreme twisting.
+        # Applied AFTER curriculum scaling — always at full strength.
         axr = qpos[self.ankle_x_right_idx]
         axl = qpos[self.ankle_x_left_idx]
+        db  = self.ankle_x_deadband  # ±0.25 rad (±14.3°)
+
+        def _ax_pen(angle):
+            excess = abs(angle) - db
+            if excess > 0:
+                return -self.ankle_x_constraint_weight * (excess ** 2)
+            return 0.0
+
+        axr_pen = _ax_pen(axr)
+        axl_pen = _ax_pen(axl)
+        ax_pen  = axr_pen + axl_pen
+        total  += ax_pen
+
         info['joint_constraints/ankle_x_right']   = float(axr)
         info['joint_constraints/ankle_x_left']    = float(axl)
-        info['joint_constraints/ankle_x_penalty'] = 0.0
+        info['joint_constraints/ankle_x_penalty'] = float(ax_pen)
 
         # ── HIP Z (leg rotation = foot direction) ─────────────────────────
         # Gen2-06: hip_z controls which direction the foot points.
