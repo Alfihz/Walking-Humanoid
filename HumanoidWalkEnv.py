@@ -1,210 +1,30 @@
 """
-HumanoidWalkEnv Gen2-21 - ANKLE CONSTRAINTS RESTORED WITH WIDER DEADBANDS
-==========================================================================
-Based on Gen2-20 with two targeted changes.
+HumanoidWalkEnv Gen2-22 - ANKLE CONSTRAINTS RESTORED TO Gen2-19 VALUES
+=======================================================================
+Based on Gen2-21 with two targeted changes.
 
-FIX (Gen2-18) — Toe site moved to x=0.12; ankle_y free zone widened to -0.3:
-    Geometry analysis showed the toe site at x=0.16 (87% along foot) required
-    ankle_y = -0.38 rad (22°) to reach the floor — far beyond the old free zone
-    of -0.1 rad (5.7°). The ankle_y constraint was actively fighting toe contact.
+FIX (Gen2-22) — ankle_y and ankle_x constraints restored to Gen2-19 values:
+    Gen2-21 tried wider deadbands (ankle_y: -0.45, ankle_x: ±0.25) to
+    accommodate the unconstrained ankle motion seen in Gen2-20 eval.
+    But Gen2-21 still caused falls — the wider deadbands were not enough.
+    Gen2-19 had the best stable walking result, so restoring those exact values:
+      ankle_y: free zone -0.3..0.0 rad (17°), weight 1.2
+      ankle_x: deadband ±0.10 rad (±5.7°), weight 3.0
+    Single-support cap (Gen2-20) is kept — it produced the best L/R symmetry
+    improvement seen across all Gen2 versions (ratio 0.413 → 1.091).
 
-    Minimum ankle_y to bring toe site to floor level:
-      At x=0.16: requires -0.22 rad, beyond old free zone of -0.1 rad
-      At x=0.12: requires -0.23 rad, still beyond old free zone of -0.1 rad
-    The ankle_y free zone must be widened regardless of toe site position.
+FIX (Gen2-21 — preserved) — Ankle constraints restored with wider deadbands:
+    Gen2-20 removed ankle constraints entirely, causing extreme ankle angles
+    (±53° lateral twist, -45° plantarflexion) and immediate falls.
+    Constraints restored: ankle_y -0.45..0, ankle_x ±0.25 rad.
+    Result still unstable — Gen2-22 tightens further to Gen2-19 values.
 
-    XML change: toe_right_site and toe_left_site moved from pos=(0.16,0,0)
-      to pos=(0.12,0,0) — 70% along foot. Still in the toe region but more
-      robustly reachable. Capsule radius = 0.027m, so toe site reaches floor
-      at ankle_y = -0.23 rad, comfortably inside the new -0.3 rad free zone.
-
-    Env change: ankle_y free zone widened from -0.1..0 to -0.3..0 rad.
-      Old: penalised any plantarflexion beyond -0.1 rad (5.7°)
-      New: allows up to -0.3 rad (17°) before penalty — enough for toe contact.
-      XML joint range is -50° to +50° so this is well within physical limits.
-      Weight unchanged at 1.2.
-
-FIX (Gen2-17 — preserved) — Heel-only penalty added; full-foot reward strengthened:
-    Gen2-16 monitor data showed 0% toe contact across all 21,000 episodes and
-    20M steps. The toe reward never fired once — a bootstrapping failure.
-    Heel-walking is the natural emergent solution from fresh training because it
-    is the most stable low-CoM posture. A sparse reward for something the agent
-    never accidentally achieves provides zero learning signal.
-
-    Fix: replace pure reward with bounded fraction-based penalty + stronger reward:
-      HEEL-ONLY PENALTY (rolling window fraction, always bounded):
-        Uses the same 20-step rolling window as the reward.
-        heel_frac = 1.0 - mean(toe_contact_history) per foot.
-        penalty = -weight * heel_frac, capped at -3.0 per foot.
-        Worst case: -6.0 total (both feet heel-only 100% of time).
-        Gated on forward_velocity > 0.1 and window >= 10 steps.
-        Bug fixed: original used per-step binary penalty (-2.0 every step)
-        with a broken cap (max(-2.0, -10.0) = -2.0 always), producing
-        -3,200+ per episode and causing immediate training collapse.
-
-      FULL-FOOT REWARD (strengthened from 3.0 → 6.0):
-        toe_frac * 6.0, capped at +6.0 per foot.
-        Combined worst case is bounded: -6.0 penalty, +12.0 reward.
-
-    New metrics: gait_reward/heel_only_right, gait_reward/heel_only_left,
-                 gait_reward/heel_only_total
-    foot_roll metrics retained and updated.
-
-FIX (Gen2-16 — preserved) — Toe contact sensors added; foot roll reward introduced:
-    The humanoid walked exclusively on its heels because no reward existed for
-    toe contact. The existing foot touch sensors (foot_X_site) sit at midfoot
-    (50% along the foot capsule) — they fire on heel contact, making it
-    impossible to distinguish heel-only from full-foot contact.
-
-    XML changes:
-      Added toe_right_site and toe_left_site at pos=(0.16, 0, 0) — 87% along
-      the 23cm foot capsule from heel. Added toe_right_touch and toe_left_touch
-      sensors linked to these sites.
-
-    Env changes:
-      - Toe sensor IDs and addresses registered in __init__
-      - Per-foot state tracking: left_toe_contact_history, right_toe_contact_history
-        (rolling 20-step window of toe contact boolean)
-      - Foot roll reward: fires when toe contact follows heel contact within the
-        same stance phase (natural heel-to-toe gait). Rewards the fraction of
-        stance time the toe is in contact after the heel lands.
-        weight=3.0, capped at +3.0 per step
-      - New metrics: gait_reward/foot_roll_right, gait_reward/foot_roll_left,
-                     gait_reward/foot_roll_total
-
-FIX (Gen2-15 — preserved) — Neck deadband constraint added (neck_y and neck_x):
-    The humanoid's head was free to tilt in any direction, using it as a
-    counterweight for forward body lean and lateral imbalance. No position
-    constraint existed — only a weak angular velocity penalty (head_stab_pen)
-    which ignored where the head was pointing entirely.
-
-    Added deadband constraints on both neck joints (qpos[22] and qpos[23]):
-      neck_y (qpos[22]): controls forward/backward head tilt (nodding)
-      neck_x (qpos[23]): controls left/right head tilt (side lean)
-      Deadband: ±0.15 rad (≈±9°) — allows natural walking head movement
-      Weight: 2.0 — moderate, same order as abdomen constraints
-      Penalty outside deadband: -weight * excess²
-
-    New metrics: joint_constraints/neck_penalty, /neck_y, /neck_x
-    INFO_KEYWORDS in train_tqc.py updated with 3 new keys (total: 85).
-
-FIX (Gen2-14 — preserved) — Arm coordination reward sign corrected for left arm:
-    shoulder1 axis is FLIPPED between arms (confirmed from XML):
-      s1r positive = right arm physically FORWARD  ✓
-      s1l positive = left arm physically BACKWARD  ← axis is mirrored
-
-    Gen2-13 coordination reward used s1l > 0.2 to mean "left arm forward",
-    but s1l positive is physically BACKWARD. The agent was being rewarded for
-    pushing the left arm backward (~0.83 rad) and simultaneously penalised by
-    the ±0.5 constraint — stuck in a tug-of-war. This caused the asymmetric
-    arm posture: left arm swinging back, right arm held still.
-
-    Fix: negate all left-arm thresholds and directions in the coordination block.
-      Right stance → left arm FORWARD now means s1l < -0.2 (not s1l > 0.2)
-      Left  stance → penalise left arm going BACKWARD means s1l > 0.0 (not s1l < 0.0)
-    Right arm logic is UNCHANGED — s1r positive = forward was already correct.
-
-FIX (Gen2-13 — preserved) — Shoulder1 free zone widened from 0..1 to ±0.5 rad:
-    TensorBoard from Gen2-12 showed shoulder1_left settling at ~1.05 rad
-    (just above the upper limit, continuously penalised) and shoulder1_right
-    at ~0.83 rad (pressed against the upper end of the free zone). Both arms
-    were pushed to sit as far forward as possible — root cause of airplane arms.
-
-    Old free zone: 0.0 to +1.0 rad — penalised any backward swing immediately.
-    New free zone: -0.5 to +0.5 rad (±29°) — symmetric, covers natural walking
-    arm swing of ±0.35 rad with a small buffer. Arms can now swing backward
-    naturally during opposite leg stance without penalty.
-
-    No reward logic changed. No joint indices changed. Constraint deadband only.
-
-FIX (Gen2-12 — preserved):
-- lateral_tilt_pen weight increased from 3.0 → 10.0.
-  Gen2-11 showed persistent rightward lean. The old penalty was too weak:
-  a 10° roll (0.17 rad) only produced -0.09 penalty — not enough to correct.
-  At 10.0 the same roll produces -0.29, giving the agent a much stronger
-  incentive to keep the torso upright laterally.
-  No joint indices, no reward logic changed — weight only.
-
-FIX (Gen2-11 — preserved):
-
-All three bugs shared the same root cause: qvel was indexed as `qpos_idx - 7`
-instead of the correct `qpos_idx - 1`. The freejoint contributes 7 entries to
-qpos but only 6 to qvel, so for any hinge joint: qvel[i] = qpos[i+1] — i.e.
-the offset is -1, not -7. The XML also contains neck_y/neck_x joints at
-qpos[22-23] between the legs and arms, which the code did not account for.
-
-FIX 1 (Gen2-11) — Arm swing velocity indices (Bug: reads left leg joints):
-    BEFORE: qvel[shoulder1_right_idx - 7] = qvel[17] = hip_y_LEFT velocity
-            qvel[shoulder1_left_idx  - 7] = qvel[20] = ankle_x_LEFT velocity
-    AFTER:  qvel[shoulder1_right_idx - 1] = qvel[23] = shoulder1_right velocity
-            qvel[shoulder1_left_idx  - 1] = qvel[26] = shoulder1_left velocity
-    Effect: arm_movement reward was rewarding left leg activity every step.
-            Right leg earned nothing. Direct cause of left-leg dominance.
-
-FIX 2 (Gen2-11) — Push-off velocity indices (Bug: cross-reads wrong ankle):
-    BEFORE: ayr_vel = qvel[ankle_y_right_idx - 7] = qvel[7]  = abdomen_y vel
-            ayl_vel = qvel[ankle_y_left_idx  - 7] = qvel[13] = ankle_y_RIGHT vel
-    AFTER:  ayr_vel = qvel[ankle_y_right_idx - 1] = qvel[13] = ankle_y_right vel
-            ayl_vel = qvel[ankle_y_left_idx  - 1] = qvel[19] = ankle_y_left vel
-    Effect: right push-off read abdomen (useless), left push-off read right ankle.
-            Only right ankle push-off was ever rewarded — drove leftward lean.
-
-FIX 3 (Gen2-11) — arm_pos / arm_vel slices (Bug: includes neck, cuts left arm):
-    BEFORE: qpos[22:28] = neck_y, neck_x, s1r, s2r, elbow_r, s1l  (misses s2l, elbow_l)
-            qvel[21:27] = neck_y, neck_x, s1r, s2r, elbow_r, s1l  (misses s2l, elbow_l)
-    AFTER:  qpos[24:30] = s1r, s2r, elbow_r, s1l, s2l, elbow_l    (all 6 arm joints)
-            qvel[23:29] = s1r, s2r, elbow_r, s1l, s2l, elbow_l    (all 6 arm joints)
-    Effect: right arm all 3 joints penalised; left arm only 1 joint penalised.
-            Also neck joints were incorrectly receiving arm penalties.
-
-FIX (Gen2-10 — preserved):
-- Removed hip_y anti-phase penalty (Gen2-09) — could not detect passive leg.
-- Added hip_y independent excursion penalty:
-    * Tracks a rolling window (80 steps) of hip_y angle for each leg
-      separately. Computes each leg's range-of-motion: max - min.
-    * If either leg's ROM falls below the minimum threshold (0.20 rad),
-      penalises that leg proportionally to the shortfall.
-    * Formula: -weight * (shortfall_right + shortfall_left), capped at -15
-    * Weight: 5.0, min_excursion: 0.20 rad (~11°)
-    * Gated on forward_velocity > 0.1 and window >= 20 samples
-    * Targets passivity directly: a leg sitting at zero gets max shortfall
-    * New metrics: hip_y_excursion_pen, hip_y_excursion_right,
-                   hip_y_excursion_left
-
-FIX (Gen2-07 — preserved):
-- Push-off reward: weight 6.0, capped at 2.0 rad/s, single-support gated
-
-FIX (Gen2-06 — preserved):
-- Hip Z deadband constraint: weight 4.0, deadband ±0.10 rad (±6°)
-
-FIX (Gen2-05 — preserved):
-- Positional lag penalty: LAG_TOLERANCE=45, LAG_PENALTY=-8.0, cap -20
-
-FIX (Gen2-03 — preserved):
-- Ankle X weight 3.0, deadband ±0.10 rad (±6°)
-
-FIX (Gen2-02 — preserved):
-- Ankle X and Hip Z applied AFTER curriculum scaling (always full strength)
-
-Gen2-01 DESIGN PRINCIPLES (preserved):
-- Minimal reward components (4-5 core only)
-- Positive rewards drive behaviour; penalties are secondary and always CAPPED
-- All left/right rewards are perfectly SYMMETRIC
-- Forward progress (+X axis) is the PRIMARY mandatory goal
-- Joint constraints are soft guidance, not hard punishment
-- Curriculum: ultra-simple balance → standing → walking
-
-BAKED-IN LESSONS FROM V17-V26:
-- Forward = +X axis
-- Replay buffer must be capped at 1M (prevents 3M slowdown)
-- Asymmetric L/R rewards → persistent lean: keep BOTH identical
-- Unbounded penalties → training collapse: ALL penalties capped
-- contact_pattern penalty unbounded caused avg -131: hard cap at -15
-- Balance reward floor must not be too negative (was -20, now -5)
-- camera_name="track" must exist in XML (not just "back"/"side")
-
-METRICS: 82 metrics (79 from Gen2-07 + 3 new: hip_y_excursion_pen,
-         hip_y_excursion_right, hip_y_excursion_left)
+FIX (Gen2-20 — preserved) — Single-support cap + ankle constraints removed:
+    Gen2-19 eval: single_support=99.4%, right contact=71%, left=29%.
+    Added single-support duration cap: penalises holding one foot up for
+    more than 50 consecutive steps (-2.0/step, cap -10.0).
+    Result: L/R ratio improved from 0.413 to 1.091. Cap kept in Gen2-22.
+    Ankle constraint removal was reverted in Gen2-21/22.
 """
 
 from gymnasium import spaces
@@ -284,7 +104,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-21 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-22 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -343,9 +163,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.shoulder2_constraint_weight = 1.5
         self.elbow_constraint_weight     = 0.8
         # Gen2-21: ankle constraints restored with wider deadbands.
-        self.ankle_y_constraint_weight   = 1.2   # restored Gen2-21
-        self.ankle_x_constraint_weight   = 3.0   # restored Gen2-21
-        self.ankle_x_deadband            = 0.25  # ±14.3° (was ±5.7°, widened Gen2-21)
+        self.ankle_y_constraint_weight   = 1.2   # Gen2-22: restored to Gen2-19
+        self.ankle_x_constraint_weight   = 3.0   # Gen2-22: restored to Gen2-19
+        self.ankle_x_deadband            = 0.10  # ±5.7° — Gen2-22: restored to Gen2-19
         # ankle_y free zone: -0.45..0.0 rad (-25.8°) covers natural push-off
 
         # --- Single-support duration cap (Gen2-20) -----------------------
@@ -626,14 +446,14 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/elbow_left']    = float(el)
         info['joint_constraints/elbow_penalty'] = float(e_pen)
 
-        # Ankle Y — restored Gen2-21 with wider free zone.
-        # Free zone: -0.45..0.0 rad (-25.8°) — covers natural push-off (~25°)
-        # and prevents exploitation of the full -45° physical limit.
-        # Gen2-20 eval: ankle_y_left pinned at -42° mean, -45° min (93% of time).
+        # Ankle Y — Gen2-22: restored to Gen2-19 values.
+        # Free zone: -0.3..0.0 rad (17°), weight 1.2.
         ayr = qpos[self.ankle_y_right_idx]
         ayl = qpos[self.ankle_y_left_idx]
-        ayr_pen = -self.ankle_y_constraint_weight * (ayr + 0.45) ** 2 if ayr < -0.45 else                   -self.ankle_y_constraint_weight * ayr ** 2 if ayr > 0.0 else 0.0
-        ayl_pen = -self.ankle_y_constraint_weight * (ayl + 0.45) ** 2 if ayl < -0.45 else                   -self.ankle_y_constraint_weight * ayl ** 2 if ayl > 0.0 else 0.0
+        ayr_pen = -self.ankle_y_constraint_weight * (ayr + 0.3) ** 2 if ayr < -0.3 else \
+                  -self.ankle_y_constraint_weight * ayr ** 2 if ayr > 0.0 else 0.0
+        ayl_pen = -self.ankle_y_constraint_weight * (ayl + 0.3) ** 2 if ayl < -0.3 else \
+                  -self.ankle_y_constraint_weight * ayl ** 2 if ayl > 0.0 else 0.0
         ay_pen  = ayr_pen + ayl_pen
         total  += ay_pen
         info['joint_constraints/ankle_y_right']   = float(ayr)
@@ -646,13 +466,12 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         scale  = 0.2 + 0.8 * min(1.0, self.walking_progress * 2)
         total *= self.joint_constraint_weight * scale
 
-        # ── ANKLE X — restored Gen2-21 with wider deadband. ─────────────
-        # Deadband: ±0.25 rad (±14.3°) — Gen2-20 eval showed feet spinning to
-        # ±53°. Natural walking needs ~±20°; ±14° catches extreme twisting.
+        # ── ANKLE X — Gen2-22: restored to Gen2-19 values. ──────────────
+        # Deadband: ±0.10 rad (±5.7°), weight 3.0.
         # Applied AFTER curriculum scaling — always at full strength.
         axr = qpos[self.ankle_x_right_idx]
         axl = qpos[self.ankle_x_left_idx]
-        db  = self.ankle_x_deadband  # ±0.25 rad (±14.3°)
+        db  = self.ankle_x_deadband  # ±0.10 rad (±5.7°)
 
         def _ax_pen(angle):
             excess = abs(angle) - db

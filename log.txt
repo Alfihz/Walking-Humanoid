@@ -59,3 +59,5 @@ Gen 2 - 19 (TQC22): Humanoid is not falling. Fixed falling issue because of feet
 Gen 2 - 20 (TQC23): Humanoid is falling and not falling. Its foot is not functioning properly because there is no constraint.
     Fix: Added ankle_x and ankle_y constraints back.
 
+Gen 2 - 21 (TQC24): Humanoid is falling and not falling. Still has issues with ankle_x and ankle_y constraints so I reverted it to Gen 2-19 values.
+    Fix: Reverted ankle_x and ankle_y constraint values to Gen 2-19 values.
