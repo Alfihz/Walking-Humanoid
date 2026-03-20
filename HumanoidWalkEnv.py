@@ -1,7 +1,7 @@
 """
-HumanoidWalkEnv Gen2-23 - CONTACT PATTERN PENALTY SOFTENED
-===========================================================
-Based on Gen2-22 with one targeted fix.
+HumanoidWalkEnv Gen2-24 - ABDOMEN_X DEADBAND + AIRBORNE TERMINATION
+======================================================================
+Based on Gen2-23 with two targeted changes.
 
 FIX (Gen2-23) — Contact pattern single-support penalty softened:
     Gen2-22 eval: contact_pattern_rew = -10.706 mean — the largest penalty
@@ -23,10 +23,25 @@ FIX (Gen2-22 — preserved) — Ankle constraints restored to Gen2-19 values:
     ankle_y: free zone -0.3..0.0 rad (17°), weight 1.2.
     ankle_x: deadband ±0.10 rad (±5.7°), weight 3.0.
 
-FIX (Gen2-21 — preserved) — Ankle constraints restored with wider deadbands:
-    Gen2-20 removed ankle constraints entirely — extreme ankle angles (±53°
-    lateral, -45° plantarflexion) caused immediate falls. Constraints restored
-    with wider deadbands. Result still unstable; Gen2-22 tightened further.
+FIX (Gen2-24) — abdomen_x deadband added; airborne termination added:
+
+  CHANGE 1 — abdomen_x deadband ±0.12 rad (±6.9°):
+    Current abdomen_x penalty fires quadratically from 0 — only -0.06 at 10°,
+    too weak to prevent the humanoid leaning its whole torso sideways to balance
+    on one leg. Gen2-23 eval showed roll=4.32° mean with std=4.25°.
+    Added deadband ±0.12 rad: free movement up to ±7° (normal walking sway),
+    quadratic penalty beyond that. At 15° penalty=-0.04, at 20° penalty=-0.10.
+    Weight unchanged at 2.0.
+
+  CHANGE 2 — Airborne termination after 10 consecutive steps:
+    Gen2-23 eval: no-contact=17.7%, right contact=82%, left contact=0.3%.
+    Hopping exploit — agent hops on right foot indefinitely.
+    Added airborne duration check to is_healthy: if both feet off ground for
+    more than 10 consecutive steps, episode terminates.
+    10 steps ≈ 0.1s — long enough to allow brief natural airborne moments
+    during normal stride, short enough to catch sustained hopping.
+
+FIX (Gen2-23 — preserved) — Contact pattern single-support penalty softened:
 
 BAKED-IN LESSONS:
 - Forward = +X axis. Replay buffer capped at 1M.
@@ -114,7 +129,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-23 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-24 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -186,6 +201,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.single_support_pen_weight = -2.0  # per step beyond cap
         self.single_support_pen_cap    = -10.0 # max penalty per step
         self.abdomen_x_constraint_weight = 2.0
+        self.abdomen_x_deadband          = 0.12  # ±0.12 rad (±6.9°) — Gen2-24
         self.abdomen_y_constraint_weight = 1.5
         self.abdomen_z_constraint_weight = 1.8
         # Gen2-06: hip_z controls foot direction (not ankle_x as previously assumed).
@@ -266,6 +282,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.right_foot_lag_steps = 0
         self.right_only_steps     = 0   # Gen2-20: single-support duration counter
         self.left_only_steps      = 0
+        self.consecutive_airborne = 0   # Gen2-24: airborne termination counter
         self.hip_y_right_history  = []  # Gen2-10: rolling ROM window per leg
         self.hip_y_left_history   = []
         self.right_toe_contact_history = []  # Gen2-16: toe contact rolling window
@@ -292,7 +309,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         min_z, max_z = self.healthy_z_range
         height_ok    = min_z < z < max_z
         upright_ok   = self.data.xquat[self.torso_id][0] > 0.7
-        return height_ok and upright_ok
+        # Gen2-24: terminate if airborne for too long (hopping exploit)
+        not_hopping  = self.consecutive_airborne <= 10
+        return height_ok and upright_ok and not_hopping
 
     @property
     def contact_forces(self):
@@ -336,6 +355,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.right_foot_lag_steps   = 0
         self.right_only_steps       = 0   # Gen2-20: single-support duration
         self.left_only_steps        = 0
+        self.consecutive_airborne   = 0   # Gen2-24: airborne termination
         self.hip_y_right_history    = []  # Gen2-10: rolling ROM windows
         self.hip_y_left_history     = []
         self.right_toe_contact_history = []  # Gen2-16: toe contact windows
@@ -382,7 +402,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             abd_y_pen = -self.abdomen_y_constraint_weight * (abd_y + 0.1) ** 2
         elif abd_y > 0.2:
             abd_y_pen = -self.abdomen_y_constraint_weight * (abd_y - 0.2) ** 2
-        abd_x_pen = -self.abdomen_x_constraint_weight * abd_x ** 2
+        # Gen2-24: deadband ±0.12 rad (±6.9°) — allows normal walking sway
+        _abd_x_excess = max(0.0, abs(abd_x) - self.abdomen_x_deadband)
+        abd_x_pen = -self.abdomen_x_constraint_weight * _abd_x_excess ** 2
         abd_z_pen = -self.abdomen_z_constraint_weight * abd_z ** 2
         abd_pen   = abd_x_pen + abd_y_pen + abd_z_pen
         total    += abd_pen
@@ -682,6 +704,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             if not hasattr(self, 'airborne_duration'):
                 self.airborne_duration = 0
             self.airborne_duration += 1
+            self.consecutive_airborne += 1  # Gen2-24: track for termination
             if self.airborne_duration > 3:
                 raw = -self.feet_air_time_penalty * (self.airborne_duration - 3)
                 contact_pattern_rew = max(raw, -15.0)   # HARD CAP
@@ -691,6 +714,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         elif single_support:
             if hasattr(self, 'airborne_duration'):
                 self.airborne_duration = 0
+            self.consecutive_airborne = 0  # Gen2-24: reset on contact
             if len(self.velocity_history) > 10:
                 avg_vel = np.mean(self.velocity_history[-10:])
                 # Gen2-23: threshold 0.2→0.0, penalty -5.0→-2.0.
@@ -708,6 +732,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         elif both_contact:
             if hasattr(self, 'airborne_duration'):
                 self.airborne_duration = 0
+            self.consecutive_airborne = 0  # Gen2-24: reset on contact
             if not hasattr(self, 'double_support_duration'):
                 self.double_support_duration = 0
             self.double_support_duration += 1

@@ -64,4 +64,6 @@ Gen 2 - 21 (TQC24): Humanoid is falling and not falling. Still has issues with a
 
 Gen 2 - 22 (TQC25): Humanoid is falling. The humanoid is falling to the front because of contact_pattern_rew. The system penalizes the humanoid before it can walk (more than 0.2 m/s).
     Fix: Change the threshold from 0.2 to 0.0. Also reduce the penalty to -2.0.
-    
+
+Gen 2 - 23 (TQC26): Humanoid is not falling. Left foot is never touching the ground. Left leg is floating to the left side of the body. ankle_x of left foot is also acting up.
+    Fix: Tighten the abdomen_x by introducing a deadband. Now instead of penalizing airborne we terminate after 10 steps.
