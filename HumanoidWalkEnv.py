@@ -1,30 +1,40 @@
 """
-HumanoidWalkEnv Gen2-22 - ANKLE CONSTRAINTS RESTORED TO Gen2-19 VALUES
-=======================================================================
-Based on Gen2-21 with two targeted changes.
+HumanoidWalkEnv Gen2-23 - CONTACT PATTERN PENALTY SOFTENED
+===========================================================
+Based on Gen2-22 with one targeted fix.
 
-FIX (Gen2-22) — ankle_y and ankle_x constraints restored to Gen2-19 values:
-    Gen2-21 tried wider deadbands (ankle_y: -0.45, ankle_x: ±0.25) to
-    accommodate the unconstrained ankle motion seen in Gen2-20 eval.
-    But Gen2-21 still caused falls — the wider deadbands were not enough.
-    Gen2-19 had the best stable walking result, so restoring those exact values:
-      ankle_y: free zone -0.3..0.0 rad (17°), weight 1.2
-      ankle_x: deadband ±0.10 rad (±5.7°), weight 3.0
-    Single-support cap (Gen2-20) is kept — it produced the best L/R symmetry
-    improvement seen across all Gen2 versions (ratio 0.413 → 1.091).
+FIX (Gen2-23) — Contact pattern single-support penalty softened:
+    Gen2-22 eval: contact_pattern_rew = -10.706 mean — the largest penalty
+    in the entire reward structure. Episodes lasting only 1-2 seconds.
+    Pitch = 13.48° forward lean; humanoid lurching forward then falling.
+
+    Root cause: the -5.0 penalty fires whenever avg_vel < 0.2 m/s during
+    single support. 40.6% of training episodes are below this threshold —
+    the penalty fires constantly in nearly half of all training episodes.
+    In early training the humanoid panics, pushes harder, overbalances, falls.
+
+    Fix: threshold 0.2→0.0 m/s, penalty -5.0→-2.0.
+    Any forward movement, however slow, now gets no penalty from this system.
+    Only truly stationary or backward single-support steps are penalised.
+
+FIX (Gen2-22 — preserved) — Ankle constraints restored to Gen2-19 values:
+    Gen2-21 tried wider deadbands (ankle_y: -0.45, ankle_x: ±0.25) — still
+    caused falls. Restored exact Gen2-19 values:
+    ankle_y: free zone -0.3..0.0 rad (17°), weight 1.2.
+    ankle_x: deadband ±0.10 rad (±5.7°), weight 3.0.
 
 FIX (Gen2-21 — preserved) — Ankle constraints restored with wider deadbands:
-    Gen2-20 removed ankle constraints entirely, causing extreme ankle angles
-    (±53° lateral twist, -45° plantarflexion) and immediate falls.
-    Constraints restored: ankle_y -0.45..0, ankle_x ±0.25 rad.
-    Result still unstable — Gen2-22 tightens further to Gen2-19 values.
+    Gen2-20 removed ankle constraints entirely — extreme ankle angles (±53°
+    lateral, -45° plantarflexion) caused immediate falls. Constraints restored
+    with wider deadbands. Result still unstable; Gen2-22 tightened further.
 
-FIX (Gen2-20 — preserved) — Single-support cap + ankle constraints removed:
-    Gen2-19 eval: single_support=99.4%, right contact=71%, left=29%.
-    Added single-support duration cap: penalises holding one foot up for
-    more than 50 consecutive steps (-2.0/step, cap -10.0).
-    Result: L/R ratio improved from 0.413 to 1.091. Cap kept in Gen2-22.
-    Ankle constraint removal was reverted in Gen2-21/22.
+BAKED-IN LESSONS:
+- Forward = +X axis. Replay buffer capped at 1M.
+- Asymmetric L/R rewards → persistent lean. Unbounded penalties → collapse.
+- qvel offset is always qpos_idx - 1 (not -7). Neck joints at qpos[22-23].
+- shoulder1 (Z axis) = forward/backward swing. Left arm sign is FLIPPED.
+- hip_y and knee are the primary locomotion joints.
+- Camera tracking requires mode="track" in XML
 """
 
 from gymnasium import spaces
@@ -104,7 +114,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-22 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-23 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -163,9 +173,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.shoulder2_constraint_weight = 1.5
         self.elbow_constraint_weight     = 0.8
         # Gen2-21: ankle constraints restored with wider deadbands.
-        self.ankle_y_constraint_weight   = 1.2   # Gen2-22: restored to Gen2-19
-        self.ankle_x_constraint_weight   = 3.0   # Gen2-22: restored to Gen2-19
-        self.ankle_x_deadband            = 0.10  # ±5.7° — Gen2-22: restored to Gen2-19
+        self.ankle_y_constraint_weight   = 1.2   # restored Gen2-21
+        self.ankle_x_constraint_weight   = 3.0   # restored Gen2-21
+        self.ankle_x_deadband            = 0.25  # ±14.3° (was ±5.7°, widened Gen2-21)
         # ankle_y free zone: -0.45..0.0 rad (-25.8°) covers natural push-off
 
         # --- Single-support duration cap (Gen2-20) -----------------------
@@ -446,14 +456,14 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['joint_constraints/elbow_left']    = float(el)
         info['joint_constraints/elbow_penalty'] = float(e_pen)
 
-        # Ankle Y — Gen2-22: restored to Gen2-19 values.
-        # Free zone: -0.3..0.0 rad (17°), weight 1.2.
+        # Ankle Y — restored Gen2-21 with wider free zone.
+        # Free zone: -0.45..0.0 rad (-25.8°) — covers natural push-off (~25°)
+        # and prevents exploitation of the full -45° physical limit.
+        # Gen2-20 eval: ankle_y_left pinned at -42° mean, -45° min (93% of time).
         ayr = qpos[self.ankle_y_right_idx]
         ayl = qpos[self.ankle_y_left_idx]
-        ayr_pen = -self.ankle_y_constraint_weight * (ayr + 0.3) ** 2 if ayr < -0.3 else \
-                  -self.ankle_y_constraint_weight * ayr ** 2 if ayr > 0.0 else 0.0
-        ayl_pen = -self.ankle_y_constraint_weight * (ayl + 0.3) ** 2 if ayl < -0.3 else \
-                  -self.ankle_y_constraint_weight * ayl ** 2 if ayl > 0.0 else 0.0
+        ayr_pen = -self.ankle_y_constraint_weight * (ayr + 0.45) ** 2 if ayr < -0.45 else                   -self.ankle_y_constraint_weight * ayr ** 2 if ayr > 0.0 else 0.0
+        ayl_pen = -self.ankle_y_constraint_weight * (ayl + 0.45) ** 2 if ayl < -0.45 else                   -self.ankle_y_constraint_weight * ayl ** 2 if ayl > 0.0 else 0.0
         ay_pen  = ayr_pen + ayl_pen
         total  += ay_pen
         info['joint_constraints/ankle_y_right']   = float(ayr)
@@ -466,12 +476,13 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         scale  = 0.2 + 0.8 * min(1.0, self.walking_progress * 2)
         total *= self.joint_constraint_weight * scale
 
-        # ── ANKLE X — Gen2-22: restored to Gen2-19 values. ──────────────
-        # Deadband: ±0.10 rad (±5.7°), weight 3.0.
+        # ── ANKLE X — restored Gen2-21 with wider deadband. ─────────────
+        # Deadband: ±0.25 rad (±14.3°) — Gen2-20 eval showed feet spinning to
+        # ±53°. Natural walking needs ~±20°; ±14° catches extreme twisting.
         # Applied AFTER curriculum scaling — always at full strength.
         axr = qpos[self.ankle_x_right_idx]
         axl = qpos[self.ankle_x_left_idx]
-        db  = self.ankle_x_deadband  # ±0.10 rad (±5.7°)
+        db  = self.ankle_x_deadband  # ±0.25 rad (±14.3°)
 
         def _ax_pen(angle):
             excess = abs(angle) - db
@@ -682,12 +693,15 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
                 self.airborne_duration = 0
             if len(self.velocity_history) > 10:
                 avg_vel = np.mean(self.velocity_history[-10:])
-                if avg_vel > 0.2:
+                # Gen2-23: threshold 0.2→0.0, penalty -5.0→-2.0.
+                # Only penalise truly stationary/backward single support.
+                # Any forward movement, however slow, gets no penalty.
+                if avg_vel > 0.0:
                     contact_pattern_rew = self.single_support_reward_weight
                     if avg_vel > 0.4:
                         contact_pattern_rew += 2.0
                 else:
-                    contact_pattern_rew = -5.0
+                    contact_pattern_rew = -2.0
             else:
                 contact_pattern_rew = 0.0
 

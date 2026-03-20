@@ -61,3 +61,7 @@ Gen 2 - 20 (TQC23): Humanoid is falling and not falling. Its foot is not functio
 
 Gen 2 - 21 (TQC24): Humanoid is falling and not falling. Still has issues with ankle_x and ankle_y constraints so I reverted it to Gen 2-19 values.
     Fix: Reverted ankle_x and ankle_y constraint values to Gen 2-19 values.
+
+Gen 2 - 22 (TQC25): Humanoid is falling. The humanoid is falling to the front because of contact_pattern_rew. The system penalizes the humanoid before it can walk (more than 0.2 m/s).
+    Fix: Change the threshold from 0.2 to 0.0. Also reduce the penalty to -2.0.
+    
