@@ -67,3 +67,8 @@ Gen 2 - 22 (TQC25): Humanoid is falling. The humanoid is falling to the front be
 
 Gen 2 - 23 (TQC26): Humanoid is not falling. Left foot is never touching the ground. Left leg is floating to the left side of the body. ankle_x of left foot is also acting up.
     Fix: Tighten the abdomen_x by introducing a deadband. Now instead of penalizing airborne we terminate after 10 steps.
+
+Gen 2 - 24 (TQC27): Humanoid is not falling. Everything seems good except for ankle_x and torso lean. ankle_x on both foot is still tilting. Torso is also tilting (not the abdomen).
+    Fix: Found out that the code did not go back to ankle_x constraint values from Gen 2-19 which it was supposed to do. So we reverted the values to the correct ones. Increase the weight penalty for torso tilt.
+
+

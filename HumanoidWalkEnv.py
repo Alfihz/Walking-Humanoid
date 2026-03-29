@@ -1,7 +1,7 @@
 """
-HumanoidWalkEnv Gen2-24 - ABDOMEN_X DEADBAND + AIRBORNE TERMINATION
+HumanoidWalkEnv Gen2-25 - ANKLE RESTORED + LATERAL TILT STRENGTHENED
 ======================================================================
-Based on Gen2-23 with two targeted changes.
+Based on Gen2-24 with three targeted changes.
 
 FIX (Gen2-23) — Contact pattern single-support penalty softened:
     Gen2-22 eval: contact_pattern_rew = -10.706 mean — the largest penalty
@@ -17,11 +17,26 @@ FIX (Gen2-23) — Contact pattern single-support penalty softened:
     Any forward movement, however slow, now gets no penalty from this system.
     Only truly stationary or backward single-support steps are penalised.
 
-FIX (Gen2-22 — preserved) — Ankle constraints restored to Gen2-19 values:
-    Gen2-21 tried wider deadbands (ankle_y: -0.45, ankle_x: ±0.25) — still
-    caused falls. Restored exact Gen2-19 values:
-    ankle_y: free zone -0.3..0.0 rad (17°), weight 1.2.
-    ankle_x: deadband ±0.10 rad (±5.7°), weight 3.0.
+FIX (Gen2-25) — Ankle constraints restored to Gen2-19 values; lateral tilt strengthened:
+
+  CHANGE 1 — ankle_y free zone: -0.45 → -0.3 rad (17°):
+    Code/docstring mismatch found in Gen2-24 — ankle_y was still at Gen2-21
+    value (-0.45 rad) despite docstring claiming Gen2-19 restoration (-0.3 rad).
+    Corrected to -0.3 rad. Weight unchanged at 1.2.
+
+  CHANGE 2 — ankle_x deadband: ±0.25 → ±0.10 rad (±5.7°):
+    Same mismatch — ankle_x deadband was still 0.25 rad (Gen2-21) in code.
+    Corrected to 0.10 rad (Gen2-19). With weight 3.0 this gives penalty of
+    -2.04 at 53° vs -0.83 previously — meaningful discouragement of foot twist.
+
+  CHANGE 3 — lateral_tilt_pen: -10.0 → -20.0:
+    Gen2-24 eval: torso roll mean=-3.19°, std=1.97° — persistent leftward lean.
+    At 3.19° lean the old penalty was only -0.031 per step — invisible to agent.
+    Doubled to -20.0: same lean now costs -0.062 per step.
+    The lean is in the torso roll (measured from quaternion), not abdomen_x,
+    so lateral_tilt_pen is the correct place to address it.
+
+FIX (Gen2-24 — preserved) — abdomen_x deadband + airborne termination:
 
 FIX (Gen2-24) — abdomen_x deadband added; airborne termination added:
 
@@ -129,7 +144,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-24 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-25 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -190,8 +205,8 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Gen2-21: ankle constraints restored with wider deadbands.
         self.ankle_y_constraint_weight   = 1.2   # restored Gen2-21
         self.ankle_x_constraint_weight   = 3.0   # restored Gen2-21
-        self.ankle_x_deadband            = 0.25  # ±14.3° (was ±5.7°, widened Gen2-21)
-        # ankle_y free zone: -0.45..0.0 rad (-25.8°) covers natural push-off
+        self.ankle_x_deadband            = 0.10  # ±5.7° — Gen2-25: restored to Gen2-19
+        # ankle_y free zone: -0.3..0.0 rad (17°) — Gen2-25: restored to Gen2-19
 
         # --- Single-support duration cap (Gen2-20) -----------------------
         # Max consecutive steps allowed on one foot before penalty fires.
@@ -484,8 +499,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Gen2-20 eval: ankle_y_left pinned at -42° mean, -45° min (93% of time).
         ayr = qpos[self.ankle_y_right_idx]
         ayl = qpos[self.ankle_y_left_idx]
-        ayr_pen = -self.ankle_y_constraint_weight * (ayr + 0.45) ** 2 if ayr < -0.45 else                   -self.ankle_y_constraint_weight * ayr ** 2 if ayr > 0.0 else 0.0
-        ayl_pen = -self.ankle_y_constraint_weight * (ayl + 0.45) ** 2 if ayl < -0.45 else                   -self.ankle_y_constraint_weight * ayl ** 2 if ayl > 0.0 else 0.0
+        ayr_pen = -self.ankle_y_constraint_weight * (ayr + 0.3) ** 2 if ayr < -0.3 else \
+                  -self.ankle_y_constraint_weight * ayr ** 2 if ayr > 0.0 else 0.0
+        ayl_pen = -self.ankle_y_constraint_weight * (ayl + 0.3) ** 2 if ayl < -0.3 else \
+                  -self.ankle_y_constraint_weight * ayl ** 2 if ayl > 0.0 else 0.0
         ay_pen  = ayr_pen + ayl_pen
         total  += ay_pen
         info['joint_constraints/ankle_y_right']   = float(ayr)
@@ -504,7 +521,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # Applied AFTER curriculum scaling — always at full strength.
         axr = qpos[self.ankle_x_right_idx]
         axl = qpos[self.ankle_x_left_idx]
-        db  = self.ankle_x_deadband  # ±0.25 rad (±14.3°)
+        db  = self.ankle_x_deadband  # ±0.10 rad (±5.7°) — Gen2-25: restored to Gen2-19
 
         def _ax_pen(angle):
             excess = abs(angle) - db
@@ -1044,7 +1061,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         torso_quat_w     = float(torso_quat[0])
         torso_roll       = 2.0 * np.arcsin(float(np.clip(torso_quat[1], -1.0, 1.0)))
         torso_pitch      = 2.0 * np.arcsin(float(np.clip(torso_quat[2], -1.0, 1.0)))
-        lateral_tilt_pen = -10.0 * torso_roll  ** 2   # Gen2-12: strengthened 3.0→10.0
+        lateral_tilt_pen = -20.0 * torso_roll  ** 2   # Gen2-25: strengthened 10.0→20.0
         pitch_penalty    = -5.0 * torso_pitch ** 2
 
         # --- Upright bonus / penalty ---
