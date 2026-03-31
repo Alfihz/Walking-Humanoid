@@ -71,4 +71,5 @@ Gen 2 - 23 (TQC26): Humanoid is not falling. Left foot is never touching the gro
 Gen 2 - 24 (TQC27): Humanoid is not falling. Everything seems good except for ankle_x and torso lean. ankle_x on both foot is still tilting. Torso is also tilting (not the abdomen).
     Fix: Found out that the code did not go back to ankle_x constraint values from Gen 2-19 which it was supposed to do. So we reverted the values to the correct ones. Increase the weight penalty for torso tilt.
 
-
+Gen 2 - 25 (TQC28): Humanoid is not falling. Everything looks good. From the data, single support is high but mostly dominant on the left foot. Distance of stride is still too short.
+    Fix: Increase the hip_y_min_excursion so it allows a longer stride. This is also to see and check if it forces the knee to bend properly like in a GAIT cycle.

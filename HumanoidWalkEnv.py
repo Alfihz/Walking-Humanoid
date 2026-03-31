@@ -1,7 +1,7 @@
 """
-HumanoidWalkEnv Gen2-25 - ANKLE RESTORED + LATERAL TILT STRENGTHENED
-======================================================================
-Based on Gen2-24 with three targeted changes.
+HumanoidWalkEnv Gen2-26 - HIP_Y MIN EXCURSION INCREASED
+=========================================================
+Based on Gen2-25 with one targeted change.
 
 FIX (Gen2-23) — Contact pattern single-support penalty softened:
     Gen2-22 eval: contact_pattern_rew = -10.706 mean — the largest penalty
@@ -144,7 +144,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-25 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-26 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -253,7 +253,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # any leg whose ROM (max-min) falls below the threshold.
         # A completely passive leg (near zero) gets the maximum shortfall.
         self.hip_y_excursion_weight  = 5.0
-        self.hip_y_min_excursion     = 0.20   # rad (~11°) minimum ROM per leg
+        self.hip_y_min_excursion     = 0.35   # rad (~20°) — Gen2-26: increased from 0.20
         self.hip_y_history_size      = 80     # steps (~2 strides at 0.5 m/s)
 
         # --- Clearance ---------------------------------------------------
