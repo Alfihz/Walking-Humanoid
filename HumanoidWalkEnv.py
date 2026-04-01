@@ -1,7 +1,7 @@
 """
-HumanoidWalkEnv Gen2-26 - HIP_Y MIN EXCURSION INCREASED
-=========================================================
-Based on Gen2-25 with one targeted change.
+HumanoidWalkEnv Gen2-27 - REWARD CLEANUP + KNEE BEND + DOUBLE SUPPORT FIX
+============================================================================
+Based on Gen2-26 with four targeted changes.
 
 FIX (Gen2-23) — Contact pattern single-support penalty softened:
     Gen2-22 eval: contact_pattern_rew = -10.706 mean — the largest penalty
@@ -36,25 +36,43 @@ FIX (Gen2-25) — Ankle constraints restored to Gen2-19 values; lateral tilt str
     The lean is in the torso roll (measured from quaternion), not abdomen_x,
     so lateral_tilt_pen is the correct place to address it.
 
-FIX (Gen2-24 — preserved) — abdomen_x deadband + airborne termination:
+FIX (Gen2-27) — Four changes: reward cleanup + knee bend + double support fix:
 
-FIX (Gen2-24) — abdomen_x deadband added; airborne termination added:
+  CHANGE 1 — Duplicate torso rotation penalty removed:
+    torso_rotation_pen in _calculate_gait_rewards (-0.3 × tav²) and
+    torso_stab_pen in step() (-0.5 × tav²) both read the same cvel data.
+    Torso angular velocity was penalised at -0.8× total. Removed
+    torso_rotation_pen from gait rewards. torso_stab_pen kept in step().
 
-  CHANGE 1 — abdomen_x deadband ±0.12 rad (±6.9°):
-    Current abdomen_x penalty fires quadratically from 0 — only -0.06 at 10°,
-    too weak to prevent the humanoid leaning its whole torso sideways to balance
-    on one leg. Gen2-23 eval showed roll=4.32° mean with std=4.25°.
-    Added deadband ±0.12 rad: free movement up to ±7° (normal walking sway),
-    quadratic penalty beyond that. At 15° penalty=-0.04, at 20° penalty=-0.10.
-    Weight unchanged at 2.0.
+  CHANGE 2 — Single-support reward removed from contact pattern:
+    contact_pattern rewarded single support at +1.0 to +3.0 per step,
+    while single_support_cap penalised it at -2.0 after 50 steps.
+    Conflicting signal for the same state. Single support is already
+    incentivised by step alternation, push-off, and swing clearance.
+    Contact pattern now only penalises bad states — no reward for normal ones.
 
-  CHANGE 2 — Airborne termination after 10 consecutive steps:
-    Gen2-23 eval: no-contact=17.7%, right contact=82%, left contact=0.3%.
-    Hopping exploit — agent hops on right foot indefinitely.
-    Added airborne duration check to is_healthy: if both feet off ground for
-    more than 10 consecutive steps, episode terminates.
-    10 steps ≈ 0.1s — long enough to allow brief natural airborne moments
-    during normal stride, short enough to catch sustained hopping.
+  CHANGE 3 — Knee bend reward on heel strike (loading response):
+    At touchdown (heel contact, no toe contact), rewards knee flexion.
+    Mimics the loading response phase of the human gait cycle.
+    Weight 3.0, threshold -0.10 rad, cap at 0.50 rad.
+    New metrics: gait_reward/knee_bend_right, gait_reward/knee_bend_left.
+
+  CHANGE 5 — Hip Y excursion redesigned with directional check:
+    Gen2-26 exploit: lateral rotation via hip_z caused hip_y to oscillate,
+    satisfying the max-min ROM threshold without genuine forward-backward stride.
+    Fix: replaced max-min with two directional conditions over 50-step window:
+      min(window) < -0.10 rad  (leg reaches IN FRONT — hip_y must go negative)
+      max(window) > +0.10 rad  (leg reaches BEHIND  — hip_y must go positive)
+    Both required. Lateral rotation keeps hip_y positive, failing condition 1.
+    Window size: 80 → 50 steps (half gait cycle at target speed).
+    Shortfall now binary: either the leg strided properly (no penalty) or it
+    didn't (full min_excursion shortfall = -1.75 per leg, -3.5 total, cap -15).
+
+  CHANGE 4 — Double support reward for push-off transition:
+    Both feet on ground with back foot in toe-only contact = good transition.
+    Reward +1.0 cancels the flat -0.5×weight(2.0)=-1.0 → net 0.0 (neutral).
+    Bad double support (both feet flat) stays at -0.5×2.0=-1.0 penalty.
+    New metrics: gait_reward/double_support_quality.
 
 FIX (Gen2-23 — preserved) — Contact pattern single-support penalty softened:
 
@@ -144,7 +162,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-26 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-27 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -254,7 +272,14 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # A completely passive leg (near zero) gets the maximum shortfall.
         self.hip_y_excursion_weight  = 5.0
         self.hip_y_min_excursion     = 0.35   # rad (~20°) — Gen2-26: increased from 0.20
-        self.hip_y_history_size      = 80     # steps (~2 strides at 0.5 m/s)
+        self.hip_y_history_size      = 50     # steps (half gait cycle) — Gen2-27: directional check
+        self.hip_y_fwd_threshold     = 0.10   # rad — leg must reach this far IN FRONT (negative)
+        self.hip_y_bwd_threshold     = 0.10   # rad — leg must reach this far BEHIND (positive)
+
+        # --- Knee bend reward (Gen2-27) ----------------------------------
+        self.knee_bend_weight     = 3.0   # reward for knee flexion at heel strike
+        self.knee_bend_threshold  = 0.10  # rad — minimum bend to qualify (~6°)
+        self.knee_bend_cap        = 0.50  # rad — cap to prevent exploitation
 
         # --- Clearance ---------------------------------------------------
         self.min_clearance_height = 0.08  # 8 cm minimum swing clearance
@@ -266,8 +291,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         self.abdomen_y_idx       = 8
         self.abdomen_x_idx       = 9
         self.hip_z_right_idx     = 11   # Gen2-06: hip rotation controls foot direction
+        self.knee_right_idx      = 13   # Gen2-27: knee flexion
         self.hip_y_right_idx     = 12   # Gen2-09: forward/backward leg swing
         self.hip_z_left_idx      = 17
+        self.knee_left_idx       = 19   # Gen2-27: knee flexion
         self.hip_y_left_idx      = 18   # Gen2-09: forward/backward leg swing
         self.ankle_y_right_idx   = 14
         self.ankle_x_right_idx   = 15
@@ -716,6 +743,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
 
         # ---- Contact pattern reward (CAPPED) ----
         contact_pattern_rew = 0.0
+        ds_quality_rew      = 0.0   # Gen2-27: double support quality (initialised here)
 
         if no_contact:
             if not hasattr(self, 'airborne_duration'):
@@ -732,17 +760,14 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             if hasattr(self, 'airborne_duration'):
                 self.airborne_duration = 0
             self.consecutive_airborne = 0  # Gen2-24: reset on contact
+            # Gen2-27: single-support reward removed — clashed with single-support cap.
+            # Single support is already incentivised by step alternation, push-off,
+            # and swing clearance. Only penalise backward/stationary movement.
             if len(self.velocity_history) > 10:
                 avg_vel = np.mean(self.velocity_history[-10:])
-                # Gen2-23: threshold 0.2→0.0, penalty -5.0→-2.0.
-                # Only penalise truly stationary/backward single support.
-                # Any forward movement, however slow, gets no penalty.
-                if avg_vel > 0.0:
-                    contact_pattern_rew = self.single_support_reward_weight
-                    if avg_vel > 0.4:
-                        contact_pattern_rew += 2.0
-                else:
+                if avg_vel <= 0.0:
                     contact_pattern_rew = -2.0
+                # else: 0.0 — forward single support gets no reward or penalty here
             else:
                 contact_pattern_rew = 0.0
 
@@ -753,18 +778,37 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             if not hasattr(self, 'double_support_duration'):
                 self.double_support_duration = 0
             self.double_support_duration += 1
+
+            # Gen2-27: Distinguish push-off transition from flat-footed stall.
+            # Identify back foot (further behind in X) and check its sensors.
+            # back foot heel OFF + toe ON = active toe-off transition → reward +0.5
+            # net with flat -0.5 penalty = 0.0 (neutral, not penalised)
+            # flat-footed stall (no push-off) stays at -0.5 penalty.
+            lf_x_pos = self.data.site_xpos[self.left_foot_site_id][0]
+            rf_x_pos = self.data.site_xpos[self.right_foot_site_id][0]
+            back_is_left  = lf_x_pos < rf_x_pos
+            back_heel_on  = float(self.data.sensordata[self.left_touch_sensor_adr  if back_is_left else self.right_touch_sensor_adr]) > 0.1
+            back_toe_on   = float(self.data.sensordata[self.left_toe_sensor_adr    if back_is_left else self.right_toe_sensor_adr])   > 0.1
+            push_off_transition = (not back_heel_on) and back_toe_on
+
+            ds_quality_rew = 1.0 if push_off_transition else 0.0  # Gen2-27 fix: +1.0 cancels -0.5×weight=2.0=-1.0
+
             if self.double_support_duration > 5:
                 excess = min(self.double_support_duration - 5, 5)
                 raw    = -self.double_support_penalty_weight * excess
                 contact_pattern_rew = max(raw, -10.0)   # HARD CAP
             else:
-                contact_pattern_rew = -0.5
+                contact_pattern_rew = -0.5   # flat penalty; +0.5 quality reward cancels if push-off
         else:
             if hasattr(self, 'double_support_duration'):
                 self.double_support_duration = 0
+            ds_quality_rew = 0.0
+            push_off_transition = False
 
         gait_reward += self.contact_pattern_weight * contact_pattern_rew
-        info['gait_reward/contact_pattern_rew'] = float(self.contact_pattern_weight * contact_pattern_rew)
+        gait_reward += ds_quality_rew
+        info['gait_reward/contact_pattern_rew']    = float(self.contact_pattern_weight * contact_pattern_rew)
+        info['gait_reward/double_support_quality'] = float(ds_quality_rew)
 
         # ---- Single-support duration cap (Gen2-20) ----
         # Track how many consecutive steps each leg is the SOLE planted foot.
@@ -858,11 +902,10 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         gait_reward -= self.orientation_weight * orient_pen
         info['gait_reward/orientation_pen'] = float(-self.orientation_weight * orient_pen)
 
-        # Torso rotation penalty
-        tav         = self.data.cvel[self.torso_id, 3:]
-        tor_rot_pen = float(-self.torso_rotation_penalty_weight * np.sum(tav ** 2))
-        gait_reward += tor_rot_pen
-        info['gait_reward/torso_rotation_pen'] = float(tor_rot_pen)
+        # Torso rotation penalty removed Gen2-27 — duplicate of torso_stab_pen in step().
+        # Both read self.data.cvel[self.torso_id, 3:]. Kept torso_stab_pen (-0.5×).
+        tor_rot_pen = 0.0
+        info['gait_reward/torso_rotation_pen'] = 0.0
 
         # Foot slide penalty
         fslide = 0.0
@@ -940,6 +983,28 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         gait_reward += push_off_rew
         info['gait_reward/push_off_reward'] = float(push_off_rew)
 
+        # ---- Knee bend reward (Gen2-27) ----
+        # Rewards knee flexion at heel strike (loading response phase).
+        # Fires when: touchdown just occurred AND heel sensor active AND
+        # toe sensor NOT active (pure heel contact) AND knee is bent.
+        # Cannot be gamed by random bending — gated tightly to touchdown event.
+        knee_bend_rew = 0.0
+        if forward_velocity > 0.1:
+            right_heel_on = float(self.data.sensordata[self.right_touch_sensor_adr]) > 0.1
+            left_heel_on  = float(self.data.sensordata[self.left_touch_sensor_adr])  > 0.1
+            if right_touchdown and right_heel_on and not right_toe_contact:
+                kne_r = float(self.data.qpos[self.knee_right_idx])
+                if kne_r < -self.knee_bend_threshold:
+                    knee_bend_rew += self.knee_bend_weight * min(abs(kne_r), self.knee_bend_cap)
+            if left_touchdown and left_heel_on and not left_toe_contact:
+                kne_l = float(self.data.qpos[self.knee_left_idx])
+                if kne_l < -self.knee_bend_threshold:
+                    knee_bend_rew += self.knee_bend_weight * min(abs(kne_l), self.knee_bend_cap)
+
+        gait_reward += knee_bend_rew
+        info['gait_reward/knee_bend_right'] = float(knee_bend_rew if right_touchdown else 0.0)
+        info['gait_reward/knee_bend_left']  = float(knee_bend_rew if left_touchdown  else 0.0)
+
         # ---- Foot roll reward (Gen2-16) ----
         # Rewards heel-to-toe contact pattern during stance.
         # Toe sensor fires when the front of the foot contacts the floor.
@@ -974,13 +1039,14 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         info['gait_reward/foot_roll_left']  = float(foot_roll_rew_l)
         info['gait_reward/foot_roll_total'] = float(foot_roll_total)
 
-        # ---- Hip Y excursion penalty (Gen2-10) ----
-        # Track each leg's hip_y angle in a rolling window. Compute each
-        # leg's ROM independently (max - min over the window). If either
-        # leg's ROM is below the minimum threshold, penalise proportionally
-        # to the shortfall. A completely passive leg (stuck near 0) has
-        # excursion ≈ 0, giving shortfall = min_excursion = maximum penalty.
-        # Both legs are evaluated symmetrically — no L/R bias.
+        # ---- Hip Y excursion penalty (Gen2-27 redesign) ----
+        # Gen2-26 exploit: agent satisfied max-min ROM by spinning legs laterally
+        # via hip_z — hip_y oscillated without genuine forward-backward stride.
+        # Fix: directional check over 50-step window (half gait cycle).
+        #   Condition 1: min(window) < -0.10 rad — leg must reach IN FRONT of body
+        #   Condition 2: max(window) > +0.10 rad — leg must reach BEHIND body
+        # Both must be satisfied. Lateral rotation keeps hip_y positive throughout
+        # so it can NEVER satisfy condition 1. Only genuine striding satisfies both.
         hy_r = float(self.data.qpos[self.hip_y_right_idx])
         hy_l = float(self.data.qpos[self.hip_y_left_idx])
 
@@ -995,10 +1061,19 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         excursion_r   = 0.0
         excursion_l   = 0.0
         if forward_velocity > 0.1 and len(self.hip_y_right_history) >= 20:
-            excursion_r = max(self.hip_y_right_history) - min(self.hip_y_right_history)
-            excursion_l = max(self.hip_y_left_history)  - min(self.hip_y_left_history)
-            shortfall_r = max(0.0, self.hip_y_min_excursion - excursion_r)
-            shortfall_l = max(0.0, self.hip_y_min_excursion - excursion_l)
+            # Directional checks — both forward AND backward swing required
+            r_goes_fwd = min(self.hip_y_right_history) < -self.hip_y_fwd_threshold
+            r_goes_bwd = max(self.hip_y_right_history) >  self.hip_y_bwd_threshold
+            l_goes_fwd = min(self.hip_y_left_history)  < -self.hip_y_fwd_threshold
+            l_goes_bwd = max(self.hip_y_left_history)  >  self.hip_y_bwd_threshold
+
+            # Penalise each leg that fails either directional requirement
+            # excursion_r/l stored as 1.0 (passing) or 0.0 (failing) for metrics
+            excursion_r = 1.0 if (r_goes_fwd and r_goes_bwd) else 0.0
+            excursion_l = 1.0 if (l_goes_fwd and l_goes_bwd) else 0.0
+
+            shortfall_r = 0.0 if excursion_r else self.hip_y_min_excursion
+            shortfall_l = 0.0 if excursion_l else self.hip_y_min_excursion
             raw_pen     = -self.hip_y_excursion_weight * (shortfall_r + shortfall_l)
             excursion_pen = max(raw_pen, -15.0)
 
@@ -1249,6 +1324,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
             'gait_reward/foot_slide_pen':          0.0,
             'gait_reward/positional_lag_penalty':  0.0,
             'gait_reward/push_off_reward':         0.0,
+            'gait_reward/knee_bend_right':        0.0,   # Gen2-27
+            'gait_reward/knee_bend_left':         0.0,   # Gen2-27
+            'gait_reward/double_support_quality': 0.0,   # Gen2-27
             'gait_reward/foot_roll_right':        0.0,   # Gen2-16
             'gait_reward/foot_roll_left':         0.0,   # Gen2-16
             'gait_reward/foot_roll_total':        0.0,   # Gen2-16

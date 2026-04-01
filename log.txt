@@ -73,3 +73,7 @@ Gen 2 - 24 (TQC27): Humanoid is not falling. Everything seems good except for an
 
 Gen 2 - 25 (TQC28): Humanoid is not falling. Everything looks good. From the data, single support is high but mostly dominant on the left foot. Distance of stride is still too short.
     Fix: Increase the hip_y_min_excursion so it allows a longer stride. This is also to see and check if it forces the knee to bend properly like in a GAIT cycle.
+
+Gen 2 - 26 (TQC29): Humanoid is not falling. BUT it is not walking properly. The left leg is tilted and ankles are tilted too. I have also found duplicates and other clashes in the env code.
+    Fix: Gen 2-26 goal was to increase the stride length, but I went on a tangent. I have changed the hip_y_min_excursion system to a (hopefully) better system. I have also added reward system for the knees and also for the double support system when it is about to push up.
+
