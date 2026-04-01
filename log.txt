@@ -77,3 +77,5 @@ Gen 2 - 25 (TQC28): Humanoid is not falling. Everything looks good. From the dat
 Gen 2 - 26 (TQC29): Humanoid is not falling. BUT it is not walking properly. The left leg is tilted and ankles are tilted too. I have also found duplicates and other clashes in the env code.
     Fix: Gen 2-26 goal was to increase the stride length, but I went on a tangent. I have changed the hip_y_min_excursion system to a (hopefully) better system. I have also added reward system for the knees and also for the double support system when it is about to push up.
 
+Gen 2 - 27 (TQC30): Humanoid is falling. It is walking on its heel instead of the whole foot and because of this it is bouncing.
+    Fix: Decrease the window for the airborne termination system.

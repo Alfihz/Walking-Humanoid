@@ -1,7 +1,7 @@
 """
-HumanoidWalkEnv Gen2-27 - REWARD CLEANUP + KNEE BEND + DOUBLE SUPPORT FIX
-============================================================================
-Based on Gen2-26 with four targeted changes.
+HumanoidWalkEnv Gen2-28 - AIRBORNE TERMINATION TIGHTENED
+=========================================================
+Based on Gen2-27 with one targeted change.
 
 FIX (Gen2-23) — Contact pattern single-support penalty softened:
     Gen2-22 eval: contact_pattern_rew = -10.706 mean — the largest penalty
@@ -74,7 +74,20 @@ FIX (Gen2-27) — Four changes: reward cleanup + knee bend + double support fix:
     Bad double support (both feet flat) stays at -0.5×2.0=-1.0 penalty.
     New metrics: gait_reward/double_support_quality.
 
-FIX (Gen2-23 — preserved) — Contact pattern single-support penalty softened:
+FIX (Gen2-28) — Consecutive airborne termination: 10 → 4 steps:
+    Gen2-27 training: no_contact = 66.8% — agent bouncing on heels.
+    Root cause: knee bend reward fires on every touchdown with heel-only
+    contact. Bouncing produces rapid touchdowns, earning knee bend reward
+    repeatedly. 10-step threshold allowed bounces short enough to avoid
+    termination while still earning rewards.
+    Fix: reduce threshold from 10 to 4 steps (0.04s).
+    4 steps allows natural brief mid-stride airborne (~0.02-0.04s).
+    Bounce requires staying airborne longer to build momentum — terminated
+    at step 4 before it can earn enough reward to be worth attempting.
+
+FIX (Gen2-27 — preserved) — Reward cleanup + knee bend + double support fix.
+
+FIX (Gen2-25 — preserved) — Ankle constraints restored to Gen2-19 values.
 
 BAKED-IN LESSONS:
 - Forward = +X axis. Replay buffer capped at 1M.
@@ -162,7 +175,7 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         # --- Curriculum state ---------------------------------------------
         self.training_phase   = training_phase
         self.walking_progress = 0.0     # 0.0 = pure standing, 1.0 = pure walking
-        print(f"Initialized HumanoidWalkEnv Gen2-27 in '{training_phase}' phase")
+        print(f"Initialized HumanoidWalkEnv Gen2-28 in '{training_phase}' phase")
 
         EzPickle.__init__(self, xml_file=xml_file, frame_skip=frame_skip,
                           training_phase=training_phase, **kwargs)
@@ -351,8 +364,9 @@ class HumanoidWalkEnv(MujocoEnv, EzPickle):
         min_z, max_z = self.healthy_z_range
         height_ok    = min_z < z < max_z
         upright_ok   = self.data.xquat[self.torso_id][0] > 0.7
-        # Gen2-24: terminate if airborne for too long (hopping exploit)
-        not_hopping  = self.consecutive_airborne <= 10
+        # Gen2-28: tightened 10→4 steps (0.04s) — stops bouncing exploit
+        # 4 steps allows natural mid-stride float, terminates bouncing
+        not_hopping  = self.consecutive_airborne <= 4
         return height_ok and upright_ok and not_hopping
 
     @property
